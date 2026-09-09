@@ -1,0 +1,40 @@
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.modelscope-venv/
+.venv/
+.conda/
+.langgraph_api/
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+config.local.py
+
+# Local vector indexes and downloaded model weights
+data/
+models/
+
+# Local reference PDFs; verify redistribution rights before force-adding any
+knowledgefile/*.pdf
+
+# Local logs and temporary files
+*.log
+*.tmp
+*.bak
+
+# Common large model/archive files
+*.bin
+*.safetensors
+*.onnx
+*.onnx_data
+*.ckpt
+*.pt
+*.pth
+*.whl
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.idea/

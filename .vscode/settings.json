@@ -1,0 +1,8 @@
+{
+  "python.defaultInterpreterPath": "D:\\anaconda\\envs\\pyenv0\\python.exe",
+  "python.terminal.activateEnvironment": true,
+  "code-runner.runInTerminal": true,
+  "code-runner.executorMap": {
+    "python": "D:\\anaconda\\envs\\pyenv0\\python.exe -u"
+  }
+}

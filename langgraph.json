@@ -1,0 +1,7 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "xin_qing": "./app.py:graph"
+  },
+  "env": ".env"
+}
