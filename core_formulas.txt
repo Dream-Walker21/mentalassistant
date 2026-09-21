@@ -1,0 +1,75 @@
+P32: 自动化思维层解构：基于序列标注模型识别文本中的自动化思维事件，输出思维事件集合及其与中间信念的触发映射关系； || MATH: 
+P34: 所述图式复杂度指数CCI的计算公式为： || MATH: 
+P36:  || MATH: CCI=|V|·Hdeg|E|+1 ; CCI=|V|·Hdeg|E|+1
+P38: 其中，为图谱节点数，为边数，为节点度分布的信息熵， || MATH: |V| ; |E| ; Hdeg
+P40:  || MATH: Hdeg=-v∈Vdeg(v)2|E|logdeg(v)2|E| ; Hdeg=-v∈Vdeg(v)2|E|logdeg(v)2|E|
+P42: 所述图式冲突熵GCE的计算公式为： || MATH: 
+P44:  || MATH: GCE=-(vi,vj)∈Econflictp(vi,vj)logp(vi,vj) ; GCE=-(vi,vj)∈Econflictp(vi,vj)logp(vi,vj)
+P46: 其中，为冲突关系边子集，为冲突边的归一化权重，为边的权重值。 || MATH: Econflict ; p(vi,vj)=w(vi,vj)(vk,vl)∈Econflictw(vk,vl) ; w(vi,vj) ; (vi,vj)
+P48: 3. 根据权利要求1所述的方法，其特征在于，所述步骤S3中神经符号混合路由的具体执行逻辑为： || MATH: 
+P50: 将单次情绪识别任务解析为图式认知任务与模态感知任务两类；图式认知任务包含信念一致性校验、认知偏差检测、图式冲突消解三类子任务，分配至符号认知推理引擎；模态感知任务包含视觉特征编码、语音特征编码、生理信号编码三类子任务，分配至神经网络感知引擎； || MATH: 
+P52: 当时，触发混合推理模式，其中为复杂度阈值，默认取值为5.0；符号认知推理引擎基于认知图式知识图谱执行逻辑推理，生成图式约束向量；神经网络感知引擎在图式约束向量的条件化下执行感知特征提取，条件化特征计算为： || MATH: CCI>τcomplex ; τcomplex ; zschema∈Rd
+P54:  || MATH: hmodal'=σ(Wc·zschema)⊙hmodal ; hmodal'=σ(Wc·zschema)⊙hmodal
+P56: 其中，为sigmoid函数，为条件投影矩阵，为逐元素乘法，为模态原始特征； || MATH: σ ; Wc ; ⊙ ; hmodal
+P58: 混合推理需求向量的计算公式为： || MATH: D∈R8
+P60:  || MATH: D=[α,Htext,Haudio,Hvisual,Hphys,Δt,CCI,GCE]T ; D=[α,Htext,Haudio,Hvisual,Hphys,Δt,CCI,GCE]T
+P62: 其中，为核心信念平均激活强度，、、、分别为各模态特征的信息熵，为多模态时间对齐偏差； || MATH: α ; Htext ; Haudio ; Hvisual ; Hphys ; Δt
+P64: 门控网络输出符号路径权重与神经路径权重： || MATH: ws ; wn
+P66:  || MATH: [ws,wn]T=Softmax(WgD+bg) ; [ws,wn]T=Softmax(WgD+bg)
+P68: 其中，为门控网络参数矩阵，为偏置向量；门控网络通过Gumbel-Softmax重参数化保证梯度可导性，温度参数默认取0.5； || MATH: Wg ; bg ; τgumbel
+P70: 各子任务的最终输出为符号推理输出与神经感知输出的加权融合： || MATH: 
+P72:  || MATH: Output=ws·Osymbolic+wn·Oneural ; Output=ws·Osymbolic+wn·Oneural
+P74: 4. 根据权利要求1所述的方法，其特征在于，所述步骤S3中跨引擎置信度双向传导机制具体为： || MATH: 
+P76: 第一传导路径：神经网络感知引擎输出各模态特征时同步输出单模态感知置信度得分；当时，其中为随时间演化的自适应动态阈值，将该模态的低置信度特征区域标记后发送至符号认知推理引擎；符号认知推理引擎基于认知图式知识图谱执行逻辑补全推理，输出补全置信度与特征修正掩码；神经网络感知引擎接收修正掩码后执行掩码注意力重加权： || MATH: cpercept ; cpercept<θadaptive(t) ; θadaptive(t) ; ccomplete ; M∈{0,1}d
+P78:  || MATH: hmodal'=hmodal+λ·(M⊙hmodal) ; hmodal'=hmodal+λ·(M⊙hmodal)
+P80: 其中，为特征修正系数，默认取值为0.3； || MATH: λ
+P82: 第二传导路径：当符号认知推理引擎输出的逻辑推理置信度低于阈值时，其中默认取0.6，调用神经网络感知引擎的跨模态感知特征序列计算图式-感知一致性得分： || MATH: clogic ; θlogic ; θlogic
+P84:  || MATH: Cconsistency=cos(μpercept,embed(Ologic))-κ·Varpercept ; Cconsistency=cos(μpercept,embed(Ologic))-κ·Varpercept
+P86: 其中，为感知特征序列的均值语义向量，为将逻辑结果映射至语义嵌入空间的投影函数，为感知特征序列的内部方差，为方差惩罚系数，默认取0.1；一致性得分反向修正逻辑推理置信度： || MATH: μpercept ; embed(·) ; Varpercept ; κ
+P88:  || MATH: clogic'=clogic+η·Cconsistency ; clogic'=clogic+η·Cconsistency
+P90: 其中，为修正系数，默认取0.2。 || MATH: η
+P92: 5. 根据权利要求1所述的方法，其特征在于，所述步骤S4中反事实跨模态一致性验证与欺骗检测的具体执行方法为： || MATH: 
+P94: 对于视觉模态V、语音模态A、文本模态T与生理信号模态P，分别构建结构因果模型、、、；每组SCM的形式化定义为四元组，其中为外生变量集，为内生变量集，为结构函数集，为外生变量的联合分布； || MATH: SCMV ; SCMA ; SCMT ; SCMP ; ⟨U,X,F,P(U)⟩ ; U ; X ; F ; P(U)
+P96: 对于目标模态，反事实生成器执行以下运算：给定观测证据，通过do-算子设置，切断所有指向模态的因果路径，基于结构函数计算反事实应然分布： || MATH: i ; e ; do(Xi=∅) ; i
+P98:  || MATH: P(Xido(Xi=∅)|e-i)=∫P(Xi|pa(i),ui')dP(ui') ; P(Xido(Xi=∅)|e-i)=∫P(Xi|pa(i),ui')dP(ui')
+P100: 其中，为模态内生变量的父节点集合，为对应的结构函数，为置零后的外生变量； || MATH: pa(i) ; i ; fi ; ui'
+P102: 模态间认知失调指数MCDI的计算公式为： || MATH: 
+P104:  || MATH: MCDI=i=14ωi·W2(P(Xi|e),P(Xido(Xi=∅)|e-i)) ; MCDI=i=14ωi·W2(P(Xi|e),P(Xido(Xi=∅)|e-i))
+P106: 其中，为二阶Wasserstein距离，为模态权重系数，为去除模态后的证据集；模态权重系数默认设置为：视觉0.25、语音0.25、文本0.30、生理信号0.20； || MATH: W2(·,·) ; ωi ; e-i ; i
+P108: 当时，其中为认知失调阈值，基于用户历史MCDI序列的滑动百分位数动态更新，默认取历史分布的85分位数，初始默认值为0.8，判定为情绪掩饰或欺骗场景，执行以下操作： || MATH: MCDI>τMCDI ; τMCDI
+P109: （a）将文本模态与生理信号模态标记为高可信模态，提升其权重系数至文本0.40、生理信号0.30； || MATH: 
+P110: （b）触发符号认知推理引擎进行深层认知归因，结合认知图式知识图谱中的冲突信念路径分析真实情绪状态； || MATH: 
+P111: （c）输出认知失调置信度与深层情绪标签； || MATH: 
+P112: （d）将欺骗检测标记置为真，并记录触发该判定的主导模态对。 || MATH: 
+P114: 6. 根据权利要求1所述的方法，其特征在于，所述步骤S5中认知负荷感知的时序欺骗痕迹追踪具体包括： || MATH: 
+P116: 认知负荷累积指标的计算：在滑动时间窗口内，其中为窗口时长，默认取5秒，计算认知负荷累积指标： || MATH: W=[t-Δ,t] ; Δ ; CLI(t)
+P118:  || MATH: CLI(t)=β1·RT(t)+β2·Hresponse(t)+β3·ΔFphys(t) ; CLI(t)=β1·RT(t)+β2·Hresponse(t)+β3·ΔFphys(t)
+P120: 其中，为响应延迟的归一化值（基于用户历史基线的z-score归一化），为响应内容的信息熵（基于文本的n-gram分布计算，n默认取3），为生理信号的变化率（心率变异性HRV与皮肤电反应GSR的一阶差分绝对值的加权和），、、为权重系数，默认分别取0.35、0.30、0.35； || MATH: RT(t) ; Hresponse(t) ; ΔFphys(t) ; β1 ; β2 ; β3
+P122: 当超过认知负荷阈值时，其中默认取0.6，标记为认知资源竞争状态，提示存在受控加工对自动化加工的抑制，即潜在的欺骗认知负荷； || MATH: CLI(t) ; θCLI ; θCLI
+P124: 微表情泄漏检测：在滑动窗口内，检测面部动作单元中的非自主泄漏信号；定义泄漏动作单元集合；具体地，计算目标情绪表达动作单元集合与泄漏动作单元集合的时序共现概率： || MATH: AUleak={AU4,AU7,AU15,AU17,AU20} ; AUexpress ; AUleak
+P126:  || MATH: Pleak(t)=τ∈WI(AUleak⊆AUobs(τ)∧AUexpress⊆AUobs(τ))|W| ; Pleak(t)=τ∈WI(AUleak⊆AUobs(τ)∧AUexpress⊆AUobs(τ))|W|
+P128: 其中，为时刻观测到的动作单元集合，为指示函数；当时，其中默认取0.2，判定存在微表情泄漏； || MATH: AUobs(t) ; t ; I(·) ; Pleak(t)>θleak ; θleak
+P130: 时序交叉验证：将认知负荷累积指标的异常时段与微表情泄漏事件进行时间对齐，计算时序欺骗一致性得分： || MATH: 
+P132:  || MATH: TDS=|WCLI∩Wleak||WCLI∪Wleak| ; TDS=|WCLI∩Wleak||WCLI∪Wleak|
+P134: 其中，为认知负荷异常时段集合，为微表情泄漏事件时段集合；当时，其中默认取0.5，与步骤S4的MCDI判定结果进行联合确认，输出最终欺骗置信度： || MATH: WCLI ; Wleak ; TDS>θTDS ; θTDS
+P136:  || MATH: DC=α1·σ(MCDI-τMCDI)+α2·TDS+α3·σ(CLI-θCLI) ; DC=α1·σ(MCDI-τMCDI)+α2·TDS+α3·σ(CLI-θCLI)
+P138: 其中，为sigmoid函数，、、为融合权重，默认分别取0.5、0.3、0.2。 || MATH: σ(·) ; α1 ; α2 ; α3
+P140: 7. 根据权利要求1所述的方法，其特征在于，所述步骤S6中自适应对抗鲁棒性验证具体为： || MATH: 
+P142: 基于认知图式知识图谱中的信念约束，生成模拟欺骗策略的对抗扰动样本；具体地，对于已识别的情绪标签，生成目标欺骗标签，通过图式约束下的优化求解对抗扰动： || MATH: ytrue ; yfake
+P144:  || MATH: δ*=argminδ‖δ‖2 s.t. fθ(x+δ)=yfake ; δ*=argminδ‖δ‖2 s.t. fθ(x+δ)=yfake
+P146: 约束条件为：，且； || MATH: fθ(x+δ)=yfake ; Lschema(x+δ,Gschema)<ϵschema
+P148: 其中，为情绪识别模型，为用户认知图式知识图谱，为图式一致性损失，定义为： || MATH: fθ ; Gschema ; Lschema
+P150:  || MATH: Lschema(x',Gschema)=(vi,vj)∈EconflictI[belief(vi,x')∧belief(vj,x')] ; Lschema(x',Gschema)=(vi,vj)∈EconflictI[belief(vi,x')∧belief(vj,x')]
+P152: 即惩罚扰动后样本中本应冲突的信念变得一致的情况，为图式偏离容忍度，默认取0.1； || MATH: ϵschema
+P154: 基于对抗扰动样本评估识别模型的鲁棒性边界：计算在图式约束下模型从误判为的最小扰动幅度；当时，其中为鲁棒性阈值，默认取0.6，判定当前识别结果存在被欺骗攻破的风险，自动提升欺骗检测阈值敏感度并触发多轮验证（要求连续3帧均满足欺骗判定条件才最终确认）。 || MATH: ytrue ; yfake ; ‖δ*‖2 ; ‖δ*‖2<θrobust ; θrobust
+P156: 8. 根据权利要求1所述的方法，其特征在于，所述步骤S7中多模态情绪识别结果输出具体为： || MATH: 
+P158: 基于经认知图式约束的跨模态注意力融合网络进行最终情绪识别；所述融合网络以各模态特征为输入，以认知图式约束向量为全局注意力偏置，计算跨模态注意力权重： || MATH: 
+P160:  || MATH: Attention(Q,K,V)=Softmax(QKTdk+Wbias·zschema)V ; Attention(Q,K,V)=Softmax(QKTdk+Wbias·zschema)V
+P162: 其中，为查询向量矩阵，为键向量矩阵，为值向量矩阵，为键向量维度，为图式偏置投影矩阵，为图式约束向量； || MATH: Q ; K ; V ; dk ; Wbias ; zschema
+P164: 当步骤S4判定为欺骗场景时，融合网络自动降低被标记为低可信模态的注意力权重，提升高可信模态（文本与生理信号）的注意力权重； || MATH: 
+P166: 最终输出包括：情绪类别标签（基于Plutchik情绪轮的8类基本情绪及其组合）、情绪强度值（0-1连续值）、欺骗检测标记（二值：诚实/欺骗）、欺骗置信度（0-1连续值）、认知失调置信度、主导欺骗模态对标识、以及深层情绪标签。 || MATH: DC
+P168: 9. 根据权利要求4所述的方法，其特征在于，所述自适应动态阈值的计算公式为： || MATH: θadaptive(t)
+P170:  || MATH: θadaptive(t)=θbase+Δθ·sin(2πtT)+γGCE·GCE ; θadaptive(t)=θbase+Δθ·sin(2πtT)+γGCE·GCE
+P172: 其中，为基础阈值，默认取0.5；为波动幅度，默认取0.1；为自适应周期，默认取300秒；为图式冲突熵调节系数，默认取0.2；所述自适应机制使阈值随时间周期性波动以避免固化，并随图式冲突程度动态调整。 || MATH: θbase ; Δθ ; T ; γGCE
+P174: 10. 一种基于认知图式神经符号混合路由与反事实跨模态一致性验证的多模态情绪识别及欺骗检测系统，其特征在于，包括： || MATH: 
+P176: 边缘感知模块，部署于用户终端设备，用于无感采集用户文本交互数据、语音时序特征数据、面部微表情图像数据与生理信号数据，并在本地执行轻量级特征提取与隐私脱敏处理； || MATH: 

@@ -5,6 +5,19 @@ __pycache__/
 .venv/
 .conda/
 .langgraph_api/
+live2d_demo/node_modules/
+live2d_demo/vendor/live2dcubismcore.min.js
+.vite/
+dist/
+start_xinqing_windows.bat
+manual_backup/
+rendered/
+docx_extract.txt
+revised_extract.txt
+CubismSdkForWeb-*/
+CubismSdkForWeb-*.zip
+hiyori_zh-Hans/
+hiyori_zh-Hans.zip
 
 # Secrets and local configuration
 .env
@@ -23,6 +36,8 @@ knowledgefile/*.pdf
 *.log
 *.tmp
 *.bak
+*.sqlite3
+*.db
 
 # Common large model/archive files
 *.bin

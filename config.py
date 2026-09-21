@@ -26,6 +26,7 @@ DEEPSEEK_TEMPERATURE = float(os.getenv("DEEPSEEK_TEMPERATURE", "0.7"))
 # in alert.py and can later route the same payload to email, a webhook, etc.
 ALERT_HTTP_URL = os.getenv("ALERT_HTTP_URL", "http://127.0.0.1:5000/alert")
 ALERT_HTTP_TIMEOUT = float(os.getenv("ALERT_HTTP_TIMEOUT", "10"))
+ALERT_API_TOKEN = os.getenv("ALERT_API_TOKEN", "")
 
 
 def build_deepseek_models() -> Dict[str, Any]:

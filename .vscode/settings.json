@@ -4,5 +4,12 @@
   "code-runner.runInTerminal": true,
   "code-runner.executorMap": {
     "python": "D:\\anaconda\\envs\\pyenv0\\python.exe -u"
-  }
+  },
+  "python-envs.pythonProjects": [
+    {
+      "path": ".",
+      "envManager": "ms-python.python:conda",
+      "packageManager": "ms-python.python:conda"
+    }
+  ]
 }

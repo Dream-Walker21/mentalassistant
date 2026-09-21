@@ -1,0 +1,12 @@
+{
+  "name": "xinqing-live2d-demo",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 8083"
+  },
+  "dependencies": {
+    "vite": "^8.3.0"
+  }
+}

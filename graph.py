@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from datetime import datetime
 from typing import Any, Callable, Dict, Iterable, Literal, Mapping, Optional, Protocol, Sequence, Union
 from urllib.request import Request, urlopen
@@ -37,7 +38,8 @@ try:
         RISK_ASSESSMENT_PROMPT,
         WEEKEND_SUPPORT_PROMPT,
     )
-    from .config import ALERT_HTTP_TIMEOUT, ALERT_HTTP_URL, build_deepseek_models
+    from .config import ALERT_API_TOKEN, ALERT_HTTP_TIMEOUT, ALERT_HTTP_URL, build_deepseek_models
+    from .data_layer import DataStore
 except ImportError:
     from prompts import (
         ADJUSTED_DAY_SUPPORT_PROMPT,
@@ -54,7 +56,8 @@ except ImportError:
         RISK_ASSESSMENT_PROMPT,
         WEEKEND_SUPPORT_PROMPT,
     )
-    from config import ALERT_HTTP_TIMEOUT, ALERT_HTTP_URL, build_deepseek_models
+    from config import ALERT_API_TOKEN, ALERT_HTTP_TIMEOUT, ALERT_HTTP_URL, build_deepseek_models
+    from data_layer import DataStore
 
 
 class Retriever(Protocol):
@@ -74,6 +77,9 @@ class AppState(TypedDict, total=False):
     messages: Annotated[list[BaseMessage], add_messages]
     query: str
     user_id: str
+    conversation_id: str
+    user_profile: Dict[str, Any]
+    data_error: str
     conversation_history: str
     current_time: str
     intent: str
@@ -88,6 +94,7 @@ class AppState(TypedDict, total=False):
     avatar_command: Dict[str, Any]
     avatar_command_sent: bool
     avatar_command_error: str
+    _conversation_lock_key: str
 
 
 ModelLike = Any
@@ -95,6 +102,23 @@ RetrieverMap = Mapping[str, Optional[Retriever]]
 AlertSender = Callable[[Dict[str, Any]], Any]
 HolidayFetcher = Callable[[str], Mapping[str, Any]]
 AvatarCommandSender = Callable[[Dict[str, Any]], Any]
+
+
+# LangGraph may run multiple requests in the same Python process. Keep turns
+# for one conversation ordered while allowing different conversations to run
+# concurrently. This is intentionally process-local; a multi-worker deploy
+# should move the queue to Redis or another shared coordinator.
+_conversation_locks: dict[str, threading.Lock] = {}
+_conversation_locks_guard = threading.Lock()
+
+
+def _conversation_lock(key: str) -> threading.Lock:
+    with _conversation_locks_guard:
+        lock = _conversation_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _conversation_locks[key] = lock
+        return lock
 
 
 def _render(template: str, values: Mapping[str, Any]) -> str:
@@ -160,13 +184,19 @@ def _retrieve(retriever: Optional[Retriever], query: str, max_chars: int = 8000)
         return f"知识库暂时不可用：{exc}"
 
 
-def _post_json(url: str, payload: Mapping[str, Any], timeout: float = 5.0) -> Any:
+def _post_json(
+    url: str,
+    payload: Mapping[str, Any],
+    timeout: float = 5.0,
+    headers: Optional[Mapping[str, str]] = None,
+) -> Any:
     """Send one JSON command to the avatar/data-processing service."""
 
+    request_headers = {"Content-Type": "application/json", **(headers or {})}
     request = Request(
         url,
         data=json.dumps(dict(payload), ensure_ascii=False).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers=request_headers,
         method="POST",
     )
     with urlopen(request, timeout=timeout) as response:
@@ -287,6 +317,7 @@ def build_graph(
     avatar_command_sender: Optional[AvatarCommandSender] = None,
     avatar_http_url: Optional[str] = None,
     alert_http_url: Optional[str] = None,
+    data_store: Optional[DataStore] = None,
     checkpointer: Optional[BaseCheckpointSaver] = None,
 ):
     """Build and compile the workflow.
@@ -312,14 +343,37 @@ def build_graph(
 
     retrievers = dict(retrievers or {})
     alert_http_url = alert_http_url or ALERT_HTTP_URL
+    data_store = data_store or DataStore()
     workflow = StateGraph(AppState)
 
     def prepare(state: AppState) -> Dict[str, Any]:
         now = datetime.now(ZoneInfo("Asia/Shanghai"))
-        return {
+        user_id = state.get("user_id", "anonymous")
+        fallback_conversation_id = str(state.get("conversation_id") or f"{user_id}-default")
+        lock_key = f"{user_id}\x1f{fallback_conversation_id}"
+        # Blocking acquire provides a FIFO-like wait queue for turns sharing
+        # this conversation. Different conversation keys never block each other.
+        _conversation_lock(lock_key).acquire()
+        result = {
             "current_time": now.strftime("%Y-%m-%d %H:%M:%S"),
             "conversation_history": _history(state),
+            "conversation_id": fallback_conversation_id,
+            "_conversation_lock_key": lock_key,
+            "user_profile": {"user_id": user_id, "preferred_name": "", "preferences": {}},
         }
+        try:
+            result["conversation_id"] = data_store.ensure_conversation(
+                user_id, fallback_conversation_id, state.get("query", "")[:40]
+            )
+            result["user_profile"] = data_store.user_context(user_id)
+            stored_messages = data_store.list_messages(user_id, result["conversation_id"], limit=24)
+            history_lines = [f"{item['role']}: {item['content']}" for item in stored_messages]
+            history_lines.append(f"user: {state.get('query', '')}")
+            result["conversation_history"] = "\n".join(history_lines)
+        except Exception as exc:
+            # A data-service outage must not stop a mental-support response.
+            result["data_error"] = str(exc)
+        return result
 
     def classify_intent(state: AppState) -> Dict[str, Any]:
         query = state.get("query", "")
@@ -398,13 +452,22 @@ def build_graph(
             "retrieval_context": state.get("retrieval_context", {}).get("combined_daily", ""),
         }
         prompt = _render(template, values)
+        history = state.get("conversation_history", "").strip()
+        if history:
+            prompt += "\n\n最近对话记录（请结合上下文自然回应，不要复述系统字段）：\n" + history
+        profile = state.get("user_profile", {})
+        if profile.get("preferred_name") or profile.get("preferences"):
+            prompt += "\n用户偏好（仅在有助于回应时参考，不要提及系统保存的信息）：" + json.dumps(
+                {"preferred_name": profile.get("preferred_name", ""), "preferences": profile.get("preferences", {})},
+                ensure_ascii=False,
+            )
         response = _invoke(response_model, prompt, state.get("query", ""))
         if not response:
             response = "我听见你现在的感受了。你可以先慢慢说说发生了什么，我们一起把眼前最困扰你的部分理清楚。"
         return {"response": response}
 
     def assess_state(state: AppState) -> Dict[str, Any]:
-        history = _history(state)
+        history = state.get("conversation_history") or _history(state)
         prompt = _render(ASSESSMENT_PROMPT, {"conversation_history": history})
         assessment = _invoke_structured(assessment_model, prompt, state.get("query", ""))
         if not assessment:
@@ -419,6 +482,9 @@ def build_graph(
             ASSESSMENT_SUMMARY_PROMPT,
             {"assessment": json.dumps(assessment, ensure_ascii=False), "query": state.get("query", "")},
         )
+        history = state.get("conversation_history", "").strip()
+        if history:
+            prompt += "\n\n最近对话记录：\n" + history
         response = _invoke(assessment_summary_model or response_model, prompt, state.get("query", ""))
         if not response:
             response = (
@@ -441,7 +507,7 @@ def build_graph(
             CRISIS_CONTEXT_PROMPT,
             {
                 "query": query,
-                "conversation_history": _history(state),
+                "conversation_history": state.get("conversation_history") or _history(state),
                 "retrieval_context": retrieved,
             },
         )
@@ -468,7 +534,7 @@ def build_graph(
             RISK_ASSESSMENT_PROMPT,
             {
                 "query": state.get("query", ""),
-                "conversation_history": _history(state),
+                "conversation_history": state.get("conversation_history") or _history(state),
                 "retrieval_context": context,
             },
         )
@@ -504,6 +570,7 @@ def build_graph(
                     alert_http_url,
                     {"alert_data": payload},
                     timeout=ALERT_HTTP_TIMEOUT,
+                    headers={"X-API-Key": ALERT_API_TOKEN} if ALERT_API_TOKEN else None,
                 )
                 sent = not isinstance(result, Mapping) or result.get("status") == "success"
             else:
@@ -523,6 +590,9 @@ def build_graph(
                 "query": state.get("query", ""),
             },
         )
+        history = state.get("conversation_history", "").strip()
+        if history:
+            prompt += "\n\n最近对话记录：\n" + history
         response = _invoke(crisis_response_model or response_model, prompt, state.get("query", ""))
         if not response:
             response = (
@@ -569,6 +639,28 @@ def build_graph(
             return {"avatar_command_sent": False, "avatar_command_error": str(exc)}
 
     def finalize(state: AppState) -> Dict[str, Any]:
+        user_id = state.get("user_id", "anonymous")
+        conversation_id = state.get("conversation_id", "")
+        try:
+            data_store.add_message(user_id, conversation_id, "user", state.get("query", ""))
+            data_store.add_message(
+                user_id,
+                conversation_id,
+                "assistant",
+                state.get("response", ""),
+                {"intent": state.get("intent", ""), "avatar_command": state.get("avatar_command", {})},
+            )
+            if state.get("assessment"):
+                data_store.save_assessment(user_id, "condition_judgement", state["assessment"], conversation_id)
+            if state.get("risk_assessment"):
+                data_store.save_assessment(user_id, "crisis", state["risk_assessment"], conversation_id)
+        except Exception as exc:
+            # Conversation storage must not prevent a user from receiving support.
+            return {"messages": [AIMessage(content=state.get("response", ""))], "data_error": str(exc)}
+        finally:
+            lock_key = state.get("_conversation_lock_key")
+            if lock_key:
+                _conversation_lock(lock_key).release()
         return {"messages": [AIMessage(content=state.get("response", ""))]}
 
     def route_intent(state: AppState) -> Literal["daily_support", "condition_judgement", "crisis"]:
@@ -624,6 +716,7 @@ def invoke_graph(
     *,
     user_id: Optional[str] = None,
     thread_id: Optional[str] = None,
+    conversation_id: Optional[str] = None,
     config: Optional[Dict[str, Any]] = None,
 ) -> AppState:
     """Convenience wrapper for a single chat turn.
@@ -662,6 +755,7 @@ def invoke_graph(
     initial: AppState = {
         "query": actual_query,
         "user_id": resolved_user_id,
+        "conversation_id": str(conversation_id or thread_id or f"{resolved_user_id}-default"),
         "messages": [HumanMessage(content=actual_query)],
     }
     return graph.invoke(initial, config=run_config or None)

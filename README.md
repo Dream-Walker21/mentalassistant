@@ -197,10 +197,13 @@ LangGraph 只向告警接口发送 JSON，不直接连接 SMTP。启动接收和
 python E:\work\mentaldemo\alert.py
 ```
 
+`alert.py` 会自动读取项目目录下的 `.env` 文件；终端中已经设置的同名环境变量优先于 `.env`。如果使用已有环境运行，可先执行 `python -m pip install -r requirements.txt` 安装 `python-dotenv`。
+
 默认通道是邮件。请通过环境变量配置，不要把密码写入源代码：
 
 ```powershell
 $env:ALERT_CHANNEL = "email"
+$env:ALERT_API_TOKEN = "generate-a-long-random-token"
 $env:SMTP_USERNAME = "your@qq.com"
 $env:SMTP_PASSWORD = "your-smtp-authorization-code"
 $env:ALERT_RECIPIENTS = "counselor@example.com,center@example.com"
@@ -216,6 +219,90 @@ $env:ALERT_WEBHOOK_URL = "https://example.com/alert"
 ```
 
 服务接口：`POST /alert`，请求体可以是 `{"alert_data": {"user_id": "demo-user", ...}}`；健康检查为 `GET /health`。新增发送方式时，实现 `AlertNotifier.send()` 并在 `create_notifier()` 注册即可，不需要修改 LangGraph。
+
+告警服务会把预警保存到 `ALERT_DB_PATH` 指定的 SQLite 文件（默认 `alert_data.sqlite3`），并按 `alert_id` 去重，记录邮件发送状态。管理界面地址为 `http://127.0.0.1:5000/admin`，启动前配置 `ADMIN_TOKEN` 和 `ADMIN_SESSION_SECRET`，登录后可以按用户 ID、风险等级和处理状态筛选，查看详情并更新 `new`、`in_progress`、`contacted`、`closed` 状态。配置 `ALERT_API_TOKEN` 后，LangGraph 会自动通过 `X-API-Key` 请求头访问 `/alert`。
+
+## 用户数据服务
+
+`data_layer.py` 是 LangGraph 和 Web API 共用的 SQLite 数据层。它按稳定匿名 `user_id` 保存用户自主设置的显示名、偏好、Live2D 模型和语音档案，同时保存会话、消息与结构化评估；不保存姓名、联系方式等实名身份字段。数据文件由 `DATA_DB_PATH` 指定，默认是 `data/assistant_data.sqlite3`，与高敏感的告警数据库分开。
+
+启动数据 API：
+
+```powershell
+conda activate pyenv0
+cd E:\work\mentaldemo
+python data_service.py
+```
+
+默认地址为 `http://127.0.0.1:8001`。配置 `DATA_API_TOKEN` 后，所有 `/api/*` 请求必须带 `X-API-Key`。主要接口为：
+
+- `GET` / `PUT` / `DELETE /api/users/{user_id}`：匿名用户档案；
+- `GET` / `POST /api/users/{user_id}/conversations`：会话列表和创建会话；
+- `GET` / `POST /api/conversations/{conversation_id}/messages`：会话消息；
+- `GET` / `POST /api/users/{user_id}/assessments`：结构化评估历史；
+- `POST /api/tts/synthesize`：GPT-SoVITS 的预留请求接口；未配置适配器时返回 `501`，但会记录任务以便后续查询；
+- `GET /api/users/{user_id}/tts/jobs/{job_id}`：查询语音任务。
+
+LangGraph 在每轮请求的 `prepare` 节点中会按 `user_id` 查询或创建档案，并在 `finalize` 节点保存本轮消息和评估。调用 `invoke_graph` 时应为同一会话同时传入稳定的 `user_id` 与 `thread_id`/`conversation_id`。
+
+## Live2D 测试前端
+
+`live2d_demo` 是使用 Hiyori Free 和官方 Cubism SDK Web Framework 的测试面板。它保留了工作流的 `avatar_command` 协议，动作按钮和文本测试会通过 `postMessage` 调用官方 SDK Demo 中的 `LAppModel`。第三方旧 Pixi renderer 不再参与绘制，因此可与 `CubismSdkForWeb-5-r.5` 的 Core 配套使用。
+
+首次准备官方 SDK Demo 时，在 SDK 示例目录运行：
+
+```powershell
+cd E:\work\mentaldemo\CubismSdkForWeb-5-r.5\Samples\TypeScript\Demo
+node copy_resources.js
+```
+
+然后开两个终端：
+
+```powershell
+# 终端 1：官方 Cubism Framework 和 HiyoriFree 模型
+cd E:\work\mentaldemo\CubismSdkForWeb-5-r.5\Samples\TypeScript\Demo
+pnpm exec vite --host 127.0.0.1 --port 8084
+
+# 终端 2：心晴助手动作测试面板
+cd E:\work\mentaldemo\live2d_demo
+pnpm dev
+```
+
+打开 `http://127.0.0.1:8083/live2d_demo/`。`8084` 是面板内部使用的官方 SDK Demo，不要关闭。`live2d_demo/vendor` 中的 Cubism Core 和模型/SDK 目录均已加入 Git 忽略规则，不应提交到公开仓库。
+
+也可以用项目根目录的 `start_live2d.py` 一键启动预览。它会自动同步 SDK 资源、启动 8084 官方 Demo 和 8083 控制面板，并在结束时清理由脚本启动的子进程：
+
+```powershell
+conda activate pyenv0
+cd E:\work\mentaldemo
+python start_live2d.py
+```
+
+不想自动打开浏览器时使用 `python start_live2d.py --no-browser`。需要联调数据层时显式追加 `--with-data`；需要启动预警服务时追加 `--with-alert`；需要同时启动 LangGraph 时追加 `--with-langgraph`。默认不启动这三个后端，避免测试 Live2D 时误触发邮件告警。
+
+### LLM 回复如何驱动人物动作
+
+工作流中的 `avatar_action` 节点只生成业务语义，不直接生成 Cubism 的模型参数。它返回白名单内的 `avatar_command`，例如：
+
+```json
+{
+  "version": 1,
+  "action": "comfort",
+  "expression": "calm",
+  "gesture": "hand_on_heart",
+  "intensity": 0.4,
+  "duration_ms": 1600
+}
+```
+
+前端收到 LangGraph 的运行结果后，把结果传给测试面板暴露的桥接函数即可：
+
+```javascript
+await window.xinqingLive2d.handleLangGraphResult(result);
+// 等价于：await window.xinqingLive2d.play(result.avatar_command)
+```
+
+面板再将 `action` 映射为 Hiyori 的动作组，将 `expression` 映射为参数，将 `intensity` 限制在安全范围内。这样 LLM 不会绑定某个具体 Live2D 模型；更换模型时只需替换 `model-config.js` 的映射。危机状态下的微笑、挥手等动作仍由后端白名单和前端映射共同限制，不能让模型自由输出 Cubism 参数。
 
 ## 安全注意事项
 
