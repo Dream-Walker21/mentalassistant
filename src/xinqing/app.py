@@ -4,12 +4,20 @@ The default graph uses DeepSeek API models from config.py. In deployment,
 construct the graph with real retrievers and alert/avatar endpoints.
 """
 
+import structlog
+
 try:
     from .graph import build_graph
     from .ingest import load_retrievers
+    from .logging_config import setup_logging
 except ImportError:
     from graph import build_graph
     from ingest import load_retrievers
+    from logging_config import setup_logging
+
+
+setup_logging()
+logger = structlog.get_logger("xinqing.app")
 
 
 try:
@@ -17,7 +25,7 @@ try:
     # XINQING_DISABLE_RAG=1 when only graph topology inspection is needed.
     retrievers = {} if __import__("os").getenv("XINQING_DISABLE_RAG") == "1" else load_retrievers()
 except Exception as exc:  # keep Studio/topology available when RAG is absent
-    print(f"RAG 加载失败，使用空检索器: {exc}")
+    logger.warning("rag_load_failed", error=str(exc))
     retrievers = {}
 
 

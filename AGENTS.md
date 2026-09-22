@@ -275,6 +275,17 @@ L0 基础设施
 - 改动 L0/L1 模块时必须同时写/更新对应测试。
 - 测试框架：pytest（待引入）。
 
+### 日志与异常处理
+- **统一用 structlog**：`logger = structlog.get_logger("xinqing.模块名")`。
+- **集中配置**：`setup_logging()` 定义在 `logging_config.py`，只在入口模块（`app.py`/`alert.py`/`data_service.py`）启动时调用一次。被 import 的模块（`graph.py`/`data_layer.py` 等）**不要调** `setup_logging()`，只 `get_logger`。
+- **except 块不静默吞**，按影响分级：
+  - `logger.error` — 危机路径失败（告警没发出、风险评估异常）
+  - `logger.warning` — 核心功能降级（数据库挂、检索挂、LLM 超时）
+  - `logger.info` — 非关键辅助失败（动画、节假日 API）
+- **结构化字段**：关键路径带 `user_id`/`conversation_id` 等上下文，普通日志不强制。
+- **隐私约束**：告警日志只记元数据（`alert_id`/`user_id`/`risk_level`/`urgency`），**不记用户对话内容**。
+- `ingest.py` 等 CLI 脚本可用 `print`，不强制接入。
+
 ### 提交
 - 提交信息用简短单行中文或英文。
 - 不在沙箱内执行 `git push`，由用户在本地终端推送。

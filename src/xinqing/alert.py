@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import html
 import json
-import logging
 import os
 import secrets
 import smtplib
+
+import structlog
 
 import psycopg
 from psycopg.rows import dict_row
@@ -34,8 +35,10 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 try:
     from .data_layer import DataStore
+    from .logging_config import setup_logging
 except ImportError:
     from data_layer import DataStore
+    from logging_config import setup_logging
 
 
 # Load deployment settings from the project-local file when this module is
@@ -43,8 +46,8 @@ except ImportError:
 ENV_FILE = Path(__file__).with_name(".env")
 load_dotenv(dotenv_path=ENV_FILE, override=False)
 
-logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
-logger = logging.getLogger("xin-qing-alert")
+setup_logging()
+logger = structlog.get_logger("xinqing.alert")
 app = Flask(__name__)
 app.secret_key = os.getenv("ADMIN_SESSION_SECRET", "local-development-session-secret")
 DB_URL = os.getenv("ALERT_DB_URL", "postgresql://xinqing:xinqing@localhost:5432/xinqing")
@@ -230,7 +233,7 @@ def _lookup_sensitive_user(user_id: str) -> dict[str, Any] | None:
             ],
         }
     except Exception:
-        logger.exception("读取用户紧急联系人信息失败 user_id=%s", user_id)
+        logger.exception("lookup_sensitive_user_failed", user_id=user_id)
         return None
 
 
@@ -274,7 +277,14 @@ class AlertNotifier(ABC):
 
 class LogNotifier(AlertNotifier):
     def send(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
-        logger.warning("心理危机告警: %s", json.dumps(dict(payload), ensure_ascii=False))
+        risk = payload.get("risk_assessment") or {}
+        logger.warning(
+            "crisis_alert_received",
+            alert_id=payload.get("alert_id"),
+            user_id=payload.get("user_id"),
+            risk_level=risk.get("risk_level", "unknown"),
+            urgency=risk.get("urgency", "unknown"),
+        )
         return {"channel": "log"}
 
 
@@ -408,7 +418,7 @@ def receive_alert() -> Any:
             result = notifier.send(payload)
             _record_email(alert_id, "sent", recipients=int(result.get("recipients_count", 0)))
         except Exception as exc:
-            logger.exception("告警发送失败")
+            logger.exception("alert_send_failed", alert_id=alert_id)
             _record_email(alert_id, "failed", error=str(exc))
             return jsonify({"status": "error", "alert_id": alert_id, "error": "邮件发送失败", "detail": str(exc)}), 500
         return jsonify({"status": "success", "alert_id": alert_id, **result})
@@ -417,7 +427,7 @@ def receive_alert() -> Any:
     except (TypeError, ValueError) as exc:
         return jsonify({"status": "error", "error": str(exc)}), 400
     except Exception as exc:
-        logger.exception("告警发送失败")
+        logger.exception("alert_handler_error")
         return jsonify({"status": "error", "error": str(exc)}), 500
 
 

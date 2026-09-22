@@ -5028,23 +5028,29 @@ dependencies = [
     { name = "langchain-community" },
     { name = "langchain-core" },
     { name = "langchain-deepseek" },
-    { name = "langchain-huggingface" },
     { name = "langchain-text-splitters" },
     { name = "langgraph" },
     { name = "langgraph-cli", extra = ["inmem"] },
-    { name = "modelscope" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pypdf" },
     { name = "python-dotenv" },
-    { name = "sentence-transformers" },
+    { name = "structlog" },
     { name = "tqdm" },
     { name = "typing-extensions" },
 ]
 
 [package.optional-dependencies]
+api-embedding = [
+    { name = "langchain-openai" },
+]
 fastapi = [
     { name = "fastapi" },
     { name = "uvicorn" },
+]
+local-embedding = [
+    { name = "langchain-huggingface" },
+    { name = "modelscope" },
+    { name = "sentence-transformers" },
 ]
 ollama = [
     { name = "langchain-ollama" },
@@ -5063,23 +5069,25 @@ requires-dist = [
     { name = "langchain-community", specifier = ">=0.3.0" },
     { name = "langchain-core", specifier = ">=0.3.0" },
     { name = "langchain-deepseek", specifier = ">=0.1.0" },
-    { name = "langchain-huggingface", specifier = ">=0.1.0" },
+    { name = "langchain-huggingface", marker = "extra == 'local-embedding'", specifier = ">=0.1.0" },
     { name = "langchain-ollama", marker = "extra == 'ollama'" },
+    { name = "langchain-openai", marker = "extra == 'api-embedding'", specifier = ">=0.3.0" },
     { name = "langchain-qdrant", marker = "extra == 'qdrant'" },
     { name = "langchain-text-splitters", specifier = ">=0.3.0" },
     { name = "langgraph", specifier = ">=0.2.0" },
     { name = "langgraph-cli", extras = ["inmem"], specifier = ">=0.1.0" },
-    { name = "modelscope", specifier = ">=1.30.0" },
+    { name = "modelscope", marker = "extra == 'local-embedding'", specifier = ">=1.30.0" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.1.0" },
     { name = "pypdf", specifier = ">=5.0.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "qdrant-client", marker = "extra == 'qdrant'" },
-    { name = "sentence-transformers", specifier = ">=3.0.0" },
+    { name = "sentence-transformers", marker = "extra == 'local-embedding'", specifier = ">=3.0.0" },
+    { name = "structlog", specifier = ">=25.0.0" },
     { name = "tqdm", specifier = ">=4.64.0" },
     { name = "typing-extensions", specifier = ">=4.9.0" },
     { name = "uvicorn", marker = "extra == 'fastapi'" },
 ]
-provides-extras = ["ollama", "qdrant", "fastapi"]
+provides-extras = ["local-embedding", "api-embedding", "ollama", "qdrant", "fastapi"]
 
 [package.metadata.requires-dev]
 dev = []

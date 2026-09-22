@@ -12,13 +12,19 @@ import secrets
 from functools import wraps
 from typing import Any, Callable
 
+import structlog
 from flask import Flask, jsonify, request
 
 try:
     from .data_layer import DataStore, validate_user_id
+    from .logging_config import setup_logging
 except ImportError:
     from data_layer import DataStore, validate_user_id
+    from logging_config import setup_logging
 
+
+setup_logging()
+logger = structlog.get_logger("xinqing.data_service")
 
 app = Flask(__name__)
 store = DataStore()

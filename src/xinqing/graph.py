@@ -16,6 +16,8 @@ from typing import Any, Callable, Dict, Iterable, Literal, Mapping, Optional, Pr
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
+import structlog
+
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
@@ -58,6 +60,9 @@ except ImportError:
     )
     from config import ALERT_API_TOKEN, ALERT_HTTP_TIMEOUT, ALERT_HTTP_URL, build_deepseek_models
     from data_layer import DataStore
+
+
+logger = structlog.get_logger("xinqing.graph")
 
 
 class Retriever(Protocol):
@@ -181,6 +186,7 @@ def _retrieve(retriever: Optional[Retriever], query: str, max_chars: int = 8000)
             parts.append(str(getattr(document, "page_content", document)))
         return "\n\n".join(parts)[:max_chars]
     except Exception as exc:  # retrieval failure should not lose the conversation
+        logger.warning("retrieve_failed", query=query[:80], error=str(exc))
         return f"知识库暂时不可用：{exc}"
 
 
@@ -372,6 +378,7 @@ def build_graph(
             result["conversation_history"] = "\n".join(history_lines)
         except Exception as exc:
             # A data-service outage must not stop a mental-support response.
+            logger.warning("load_context_failed", user_id=user_id, error=str(exc))
             result["data_error"] = str(exc)
         return result
 
@@ -397,6 +404,7 @@ def build_graph(
             try:
                 info.update(dict(holiday_fetcher(now.strftime("%Y-%m-%d"))))
             except Exception as exc:
+                logger.info("holiday_fetch_failed", error=str(exc))
                 info["error"] = str(exc)
         return {"holiday_info": info}
 
@@ -577,6 +585,12 @@ def build_graph(
                 return {"alert_sent": False, "alert_error": "未配置告警接口"}
             return {"alert_sent": sent}
         except Exception as exc:
+            logger.error(
+                "alert_send_failed",
+                user_id=state.get("user_id", "anonymous"),
+                risk_level=assessment.get("risk_level", "unknown"),
+                error=str(exc),
+            )
             return {"alert_sent": False, "alert_error": str(exc)}
 
     def crisis_response(state: AppState) -> Dict[str, Any]:
@@ -636,6 +650,7 @@ def build_graph(
             return {"avatar_command_sent": sent}
         except Exception as exc:
             # Avatar output is best-effort: a failed animation must not fail chat.
+            logger.info("avatar_dispatch_failed", error=str(exc))
             return {"avatar_command_sent": False, "avatar_command_error": str(exc)}
 
     def finalize(state: AppState) -> Dict[str, Any]:
@@ -656,6 +671,7 @@ def build_graph(
                 data_store.save_assessment(user_id, "crisis", state["risk_assessment"], conversation_id)
         except Exception as exc:
             # Conversation storage must not prevent a user from receiving support.
+            logger.warning("finalize_storage_failed", user_id=user_id, conversation_id=conversation_id, error=str(exc))
             return {"messages": [AIMessage(content=state.get("response", ""))], "data_error": str(exc)}
         finally:
             lock_key = state.get("_conversation_lock_key")
