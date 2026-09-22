@@ -13,25 +13,25 @@
 | 编号 | 部分 | 负责人 | 作用 |
 |---|---|---|---|
 | ① | 智能体工作流 | 蒋状钊 | 意图分类、情绪识别、RAG 检索、风险评估、告警、立绘动作决策 |
-| ② | 数据处理与多模态中间层 | 王力涵 | ASR 语音转文本、调用工作流、TTS 文本转语音、聚合响应 |
+| ② | 数据服务（兼中间层） | 王力涵 | 数据 CRUD、调用工作流、TTS 文本转语音、聚合响应 |
 | ③ | Web 前端 | 袁群 | 数字人立绘、文本/语音输入、展示语音+文本+动作 |
 
 ### 1.2 一次完整对话的请求流转
 
 ```
 用户
- │  (文本 或 语音)
- ▼
+  │  (文本 或 语音)
+  ▼
 ┌─────────────────┐
 │  ③ Web 前端     │
 └────────┬────────┘
          │  接口 A: POST /chat
          ▼
 ┌─────────────────┐
-│ ② 多模态中间层  │
-│  - ASR (若语音) │
+│ ② data_service  │
+│  (兼中间层)     │
 └────────┬────────┘
-         │  接口 B: 调用工作流 (invoke_graph / HTTP)
+         │  接口 B: 调用工作流 (HTTP)
          ▼
 ┌─────────────────┐
 │ ① 智能体工作流  │  (LangGraph)
@@ -40,16 +40,9 @@
 │  ├─ assessment  │
 │  └─ crisis ─────┼──► 接口 D: POST /alert  → 告警服务 (邮件/webhook)
 │                 │
-│  立绘动作决策 ──┼──► 接口 C: POST /avatar/command → 中间层接收
+│  返回 {文本回复, 动作指令, 风险评估, ...}
 └────────┬────────┘
-         │  返回 {文本回复, 动作指令, 风险评估, ...}
-         ▼
-┌─────────────────┐
-│ ② 多模态中间层  │
-│  - TTS (文本转语音) │
-│  - 聚合 {语音, 文本, 动作} │
-└────────┬────────┘
-         │  接口 A 响应
+         │  data_service 聚合 {语音, 文本, 动作}
          ▼
 ┌─────────────────┐
 │  ③ Web 前端     │  播放语音 + 显示文本 + 驱动立绘动作
@@ -59,9 +52,9 @@
 ### 1.3 关键说明
 
 - **工作流是核心**：所有对话逻辑由 ① 完成，② 只做模态转换和聚合，不做业务判断。
-- **立绘动作的流向**：工作流内部决定动作 → 通过接口 C 发给中间层 → 中间层随响应一起回给前端。前端不直接调用工作流。
-- **告警是旁路**：危机路径中工作流直接调用告警服务（接口 D），不经过中间层，不阻塞对话回复。
-- **前端永远只跟中间层说话**：前端不直接访问工作流或告警服务。
+- **立绘动作的流向**：工作流响应已含 `avatar_command`，data_service 透传给前端，前端驱动 Live2D。无需独立缓存接口。
+- **告警是旁路**：危机路径中工作流直接调用告警服务（接口 D），不经过 data_service，不阻塞对话回复。
+- **前端永远只跟 data_service 说话**：前端不直接访问工作流或告警服务。
 
 ---
 
@@ -69,9 +62,9 @@
 
 | 服务 | 默认端口 | 启动方式 | 说明 |
 |---|---|---|---|
-| 智能体工作流 (LangGraph) | 2024 | `langgraph dev` 或自定义服务 | Agent Server，中间层通过 HTTP 调用 |
-| 多模态中间层 | 8000 | `python server.py`（待开发） | 前端唯一入口；同时接收立绘动作 |
-| 告警服务 | 5000 | `python src/xinqing/alert.py` | 已实现，接收危机告警并发邮件/webhook |
+| 智能体工作流 (LangGraph) | 2024 | `langgraph dev` 或自定义服务 | Agent Server，data_service 通过 HTTP 调用 |
+| data_service（兼中间层） | 8001 | `python -m xinqing.data_service.app` | 前端唯一入口；数据 CRUD + 调工作流 + TTS + 聚合 |
+| 告警服务 | 5000 | `python -m xinqing.data_service.alert` | 已实现，接收危机告警并发邮件/webhook |
 | Web 前端 | 5173 或 3000 | `npm run dev`（待开发） | 用户浏览器访问 |
 
 > 生产环境部署时端口可通过环境变量覆盖，开发阶段使用上述默认值。
@@ -82,20 +75,19 @@
 
 | 接口 | 方向 | 方法 & 路径 | 状态 |
 |---|---|---|---|
-| A | 前端 → 中间层 | `POST /chat` | 待开发（王力涵） |
-| A-health | 前端 → 中间层 | `GET /health` | 待开发 |
-| B | 中间层 → 工作流 | `POST /invoke` 或直接调用 `invoke_graph()` | 工作流侧待暴露 HTTP |
-| C | 工作流 → 中间层 | `POST /avatar/command` | 待开发（王力涵接收端） |
-| D | 工作流 → 告警服务 | `POST /alert` | ✅ 已实现（`src/xinqing/alert.py`） |
+| A | 前端 → data_service | `POST /chat` | 待开发（王力涵） |
+| A-health | 前端 → data_service | `GET /health` | ✅ 已实现 |
+| B | data_service → 工作流 | HTTP 调 langgraph API | ✅ langgraph dev 已暴露 |
+| D | 工作流 → 告警服务 | `POST /alert` | ✅ 已实现（`src/xinqing/data_service/alert.py`） |
 | D-health | 工作流 → 告警服务 | `GET /health` | ✅ 已实现 |
 
 ---
 
 ## 4. 接口详细定义
 
-### 接口 A：前端 → 多模态中间层（用户发送消息）
+### 接口 A：前端 → data_service（用户发送消息）
 
-这是前端调用的唯一业务接口。中间层负责将语音转文本、调用工作流、将回复转语音后聚合返回。
+这是前端调用的唯一业务接口。data_service 负责调用工作流、将回复转语音后聚合返回。
 
 ```
 POST /chat
@@ -270,45 +262,11 @@ Content-Type: application/json
 
 ---
 
-### 接口 C：工作流 → 中间层（立绘动作指令）
+### 接口 C：~~工作流 → 中间层（立绘动作指令）~~ 已废弃
 
-工作流在每条回复生成后，通过此接口将立绘动作发给中间层。中间层缓存该动作，随接口 A 的响应一起返回前端。
+> **已废弃**：工作流响应（接口 B 返回值）已含 `avatar_command` 字段，data_service 直接透传给前端，无需独立缓存接口。以下动作白名单仍有效，供前端/data_service 二次校验参考。
 
-```
-POST http://127.0.0.1:8000/avatar/command
-Content-Type: application/json
-```
-
-#### 请求
-
-```json
-{
-  "version": 1,
-  "action": "comfort",
-  "expression": "calm",
-  "gesture": "hand_on_heart",
-  "intensity": 0.4,
-  "duration_ms": 1600
-}
-```
-
-> 此格式与 `src/xinqing/graph.py` 的 `_parse_avatar_command()` 输出完全一致，字段已通过白名单校验。
-
-#### 响应
-
-```json
-{
-  "status": "success"
-}
-```
-
-#### 实现要求（王力涵）
-
-1. 中间层维护一个「最近一次动作」缓存（按 user_id 隔离），收到后暂存。
-2. 接口 A 响应时取出并清空该缓存。
-3. 若工作流发送失败，`src/xinqing/graph.py` 只记录在 `avatar_command_error`，**不阻断文字回复**——中间层需容忍动作缺失，给前端返回默认动作。
-
-#### 动作白名单（由工作流保证，前端/中间层可做二次校验）
+#### 动作白名单（由工作流保证，前端3&%5B.可做二次校:=校验）
 
 | 字段 | 允许值 |
 |---|---|
@@ -492,26 +450,24 @@ interface ChatResponse {
 
 ## 8. 各端开发 checklist
 
-### 王力涵（多模态中间层）
+### 王力涵（data_service 兼中间层）
 
-- [ ] 实现 `POST /chat`：接收文本/语音 → ASR → 调用工作流 → TTS → 聚合响应
-- [ ] 实现 `POST /avatar/command`：接收并缓存立绘动作
-- [ ] 实现 `GET /health`：检查工作流/ASR/TTS 可达性
-- [ ] ASR 选型（如 Whisper / 云服务）
-- [ ] TTS 选型（如 edge-tts / 云服务）
+- [ ] 实现 `POST /chat`：接收文本 → 调用工作流 → TTS → 聚合响应（含 avatar_command）
+- [ ] 实现 `GET /health`：检查工作流/TTS 可达性
+- [ ] TTS 选型（如 edge-tts / GPT-SoVITS）
 - [ ] 语音文件管理（生成 URL，定期清理临时文件）
 - [ ] 超时与错误处理
 
 ### 袁群（Web 前端）
 
-- [ ] 文本输入框 + 语音录制按钮
-- [ ] 调用 `POST /chat`，处理 `multipart/form-data` 上传
+- [ ] 文本输入框
+- [ ] 调用 `POST /chat`
 - [ ] 数字人立绘：根据 `avatar_command` 驱动表情/手势/动作
 - [ ] 文字回复展示（逐字或气泡）
 - [ ] 语音播放（`audio_url`）
 - [ ] 对话历史展示
 - [ ] 危机提示样式（`risk_level` 为 high/critical 时特殊展示）
-- [ ] 错误态处理（超时、ASR 失败等）
+- [ ] 错误态处理（超时等）
 
 ### 蒋状钊（智能体工作流，已基本完成）
 
@@ -519,7 +475,7 @@ interface ChatResponse {
 - [ ] 跑通 `src/xinqing/ingest.py` 建 Chroma 索引
 - [ ] 端到端测试三条分支（daily / assessment / crisis）
 - [ ] 确认 DeepSeek 模型名可用
-- [ ] （可选）暴露工作流 HTTP 接口供中间层远程调用
+- [ ] （可选）暴露工作流 HTTP 接口供 data_service 远程调用
 - [ ] （可选）接入真实节假日 API
 
 ---
@@ -531,16 +487,15 @@ interface ChatResponse {
         ↓
 第2步  三人共同确认本契约文档无异议
         ↓
-第3步  王力涵: 实现中间层骨架（先不做 ASR/TTS，直接透传文本调工作流）
+第3步  王力涵: 在 data_service 实现 /chat 骨架（先不做 TTS，直接透传文本调工作流）
         袁群: 实现前端骨架（文本输入 + 文字回复展示，先不做立绘）
-        → 此时可三方联调：前端发文字 → 中间层 → 工作流 → 文字回复
+        → 此时可三方联调：前端发文字 → data_service → 工作流 → 文字回复
         ↓
-第4步  王力涵: 接入 ASR/TTS
-        袁群: 接入语音输入 + 语音播放
+第4步  王力涵: 接入 TTS
+        袁群: 接入语音播放
         → 联调语音链路
         ↓
-第5步  袁群: 接入数字人立绘（avatar_command 驱动）
-        王力涵: 确认 /avatar/command 接收正常
+第5步  袁群: 接入数字人立绘（avatar_command 驱动，工作流响应已含）
         → 联调立绘动作
         ↓
 第6步  全员: 危机路径联调（触发告警邮件 + 危机回复 + 严肃表情动作）

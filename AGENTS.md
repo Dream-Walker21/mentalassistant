@@ -9,7 +9,7 @@
 | 成员 | 职责 | 负责目录 |
 |---|---|---|
 | 蒋状钊 | ① 智能体工作流（LangGraph） | `src/xinqing/workflow/`（graph.py、prompts.py、ingest.py、app.py）、`src/xinqing/common/config.py` |
-| 王力涵 | ② 多模态中间层 + 数据层 + 部署 | `src/xinqing/common/data_layer.py`、`src/xinqing/data_service/`（app.py、alert.py）、`src/xinqing/middleware/`（待建）、`scripts/` |
+| 王力涵 | ② 数据服务+中间层 + 数据层 + 部署 | `src/xinqing/common/data_layer.py`、`src/xinqing/data_service/`（app.py 兼中间层、alert.py）、`scripts/` |
 | 袁群 | ③ Web 前端 | `web/`（正式前端待建，当前仅有 `web/live2d_demo/` 测试面板） |
 | 共同维护 | 接口契约、项目结构、文档 | `docs/API_CONTRACT.md`、`AGENTS.md`、`pyproject.toml`、`.env.example` |
 
@@ -25,8 +25,8 @@ L2 服务入口
     └──→ workflow/ingest.py
 
   data_service/app.py ──→ common/data_layer.py
+  data_service/app.py ──→ workflow（HTTP 调用 langgraph 服务）
   data_service/alert.py ──→ common/data_layer.py
-  middleware/(待建) ──→ workflow/graph.py (invoke_graph)
 
 L1 核心逻辑
   workflow/graph.py ──→ workflow/prompts.py
@@ -45,7 +45,7 @@ L0 基础设施
 |---|---|---|
 | L0 基础设施 | `common/config.py`、`common/data_layer.py` | **最高** — 所有上游模块都依赖 |
 | L1 核心逻辑 | `workflow/prompts.py`、`workflow/ingest.py`、`workflow/graph.py` | **高** — 工作流核心，接口变动影响中间层和前端 |
-| L2 服务入口 | `workflow/app.py`、`data_service/app.py`、`data_service/alert.py`、`middleware/` | **中** — 对外暴露 HTTP 接口 |
+| L2 服务入口 | `workflow/app.py`、`data_service/app.py`（兼中间层）、`data_service/alert.py` | **中** — 对外暴露 HTTP 接口 |
 | L3 前端 | `web/` | **低** — 仅影响用户界面 |
 
 ---
@@ -56,16 +56,15 @@ L0 基础设施
 
 | 边界 | 定义位置 | 消费方 |
 |---|---|---|
-| `build_graph()` / `invoke_graph()` 签名 | `workflow/graph.py` | 中间层、`workflow/app.py` |
+| `build_graph()` / `invoke_graph()` 签名 | `workflow/graph.py` | `data_service/app.py`（HTTP 调用）、`workflow/app.py` |
 | `DataStore` 公共方法 | `common/data_layer.py` | `workflow/graph.py`、`data_service/alert.py`、`data_service/app.py` |
 | `POST /alert` 接口 | `data_service/alert.py` | `workflow/graph.py`（危机路径调用） |
 | `/api/*` 数据接口 | `data_service/app.py` | 前端（待建） |
-| `POST /chat` 接口 | `middleware/`（待建） | 前端（待建） |
-| `POST /avatar/command` 接口 | `middleware/`（待建） | `workflow/graph.py`（工作流调用） |
-| `AvatarCommand` 数据模型 | `API_CONTRACT.md` §5 | 工作流、中间层、前端 |
-| `RiskAssessment` 数据模型 | `API_CONTRACT.md` §5 | 工作流、中间层、前端 |
+| `POST /chat` 接口 | `data_service/app.py` | 前端（待建） |
+| `AvatarCommand` 数据模型 | `API_CONTRACT.md` §5 | 工作流、data_service、前端 |
+| `RiskAssessment` 数据模型 | `API_CONTRACT.md` §5 | 工作流、data_service、前端 |
 | 环境变量集合 | `.env.example` | 所有服务 |
-| 动作白名单 | `API_CONTRACT.md` §4 接口C | 工作流（产出）、前端（消费） |
+| 动作白名单 | 工作流响应内嵌（`avatar_command` 字段） | 工作流（产出）、前端（消费） |
 
 ---
 
@@ -107,7 +106,7 @@ L0 基础设施
 | 改 `graph.py` 内部节点逻辑但不改 `build_graph` 签名 | L1 内部改动 → 可直接改 |
 | 改 `graph.py` 的 `build_graph()` 参数列表 | 触及边界 → 需通知王力涵（中间层调用方） |
 | 改 `data_layer.py` 的 `DataStore` 公共方法 | L0 + 触及边界 → 需通知蒋状钊+王力涵 |
-| 换数据库（SQLite → PostgreSQL） | L0 基础设施改动 → 需先讨论方案，影响 `data_layer.py`、`alert.py`、`data_service.py`、`graph.py` |
+| 换数据库（SQLite → PostgreSQL） | L0 基础设施改动 → 需先讨论方案，影响 `data_layer.py`、`alert.py`、`data_service/app.py`、`graph.py` |
 | 改 `config.py` 新增环境变量 | L0 + 触及边界（环境变量集合）→ 需通知所有部署者 |
 | 改 `API_CONTRACT.md` 接口定义 | 触及边界 → 需通知所有相关方 |
 
@@ -332,13 +331,13 @@ L0 基础设施
 | 部署脚本（scripts/） | ✅ 完成 | 王力涵 |
 | 接口契约文档 | ✅ 完成 | 共同 |
 | 目录结构重构（按服务分包） | ✅ 完成 | 王力涵 |
-| 多模态中间层（middleware/） | ❌ 未开始 | 王力涵 |
+| /chat 中间层路由（data_service/app.py） | ❌ 未开始 | 王力涵 |
 | 正式 Web 前端 | ❌ 未开始 | 袁群 |
 | 测试代码（tests/） | ❌ 未开始 | 共同 |
 | 知识库索引构建 | ❌ 未跑通 | 蒋状钊 |
 
 ### 下一步（按 API_CONTRACT.md §9 联调顺序）
 1. 蒋状钊：跑通 `ingest.py` 建 Chroma 索引 + 端到端测试三条分支
-2. 王力涵：实现中间层骨架（`POST /chat` 文本透传 + `POST /avatar/command` 缓存 + `GET /health`）
+2. 王力涵：在 data_service 实现 /chat 骨架（文本透传调工作流 + `GET /health`）
 3. 袁群：实现前端骨架（文本输入 + 文字回复展示）
-4. 三方联调文字链路 → 接入 ASR/TTS → 接入立绘 → 危机路径联调
+4. 三方联调文字链路 → 接入 TTS → 接入立绘 → 危机路径联调

@@ -1,7 +1,7 @@
 # 心晴助手 鉴权机制设计文档
 
-> 状态：设计已定稿，待中间层建完后落地。
-> 方案：C（中间层统一鉴权）+ 企业级 JWT。
+> 状态：设计已定稿，待 /chat 链路跑通后落地。
+> 方案：C（data_service 兼中间层统一鉴权）+ 企业级 JWT。
 > 关联：`API_CONTRACT.md §7`、`AGENTS.md §3 接口边界`。
 
 ---
@@ -43,21 +43,22 @@
 └─────────┬─────────────────────────────────────────────────────────┘
           │  唯一入口
           ▼
-┌─ 中间层 (8000) ───────────────────────────────────────────────────┐
+┌─ data_service (8001) ─────────────────────────────────────────────┐
 │  /auth/login    验密码 → 签 JWT                                    │
 │  /auth/refresh  验 refresh → 签新 access                           │
 │  /auth/me       验 access → 返回用户信息                           │
 │  /chat 等业务    验 access → 提取 user_id → 调下游(带服务间key)     │
-└────┬──────────────────────────┬───────────────────────────────────┘
-     │ 服务间静态 key            │ 服务间静态 key
-     ▼                          ▼
-┌─ data_service (8001) ─┐   ┌─ langgraph (2024) ─┐   ┌─ alert (5000) ─┐
-│  只信任中间层调用       │   │  只信任中间层调用    │   │  只信任工作流调用 │
-│  不验JWT, 验服务间key   │   │  不验JWT, 验服务间key│   │  管理后台保持独立 │
-└───────────────────────┘   └─────────────────────┘   └─────────────────┘
+│  /api/* 数据     验 access → 数据 CRUD                             │
+└────┬───────────────────────────────────────────────────────────────┘
+     │ 服务间静态 key
+     ▼
+┌─ langgraph (2024) ─┐   ┌─ alert (5000) ─┐
+│  只信任 data_service  │   │  只信任工作流调用 │
+│  不验JWT, 验服务间key │   │  管理后台保持独立 │
+└─────────────────────┘   └─────────────────┘
 ```
 
-**核心原则**：JWT 只在中间层验一次，下游服务用服务间鉴权（静态 key）信任中间层。认证在网关层收敛，下游做授权信任。
+**核心原则**：JWT 只在 data_service 验一次，langgraph/alert 用服务间鉴权（静态 key）信任 data_service。认证在网关层收敛，下游做授权信任。
 
 ---
 
@@ -103,7 +104,7 @@
 
 ## 5. 接口定义
 
-### 5.1 中间层新增接口
+### 5.1 data_service 新增接口
 
 ```
 POST /auth/login
@@ -128,7 +129,7 @@ GET /auth/me
 
 ### 5.2 服务间鉴权
 
-下游服务（data_service、langgraph）只接受带 `X-Service-Key: <SERVICE_API_KEY>` 的请求。`SERVICE_API_KEY` 是中间层与下游共享的静态密钥，环境变量配置。
+下游服务（langgraph、alert）只接受带 `X-Service-Key: <SERVICE_API_KEY>` 的请求。`SERVICE_API_KEY` 是 data_service 与下游共享的静态密钥，环境变量配置。
 
 ---
 
@@ -137,11 +138,11 @@ GET /auth/me
 | 现有 | 改动 | 说明 |
 |---|---|---|
 | `data_layer.py` `create_session`/`session_user`/`revoke_session` | 改为 refresh token 存储 | `token_hash` 改存 `SHA-256(token)` 走索引；加 `revoked` 字段 |
-| `data_service.py` register/login/logout | 移到中间层 | data_service 退化为纯数据 CRUD，只接受中间层调用 |
-| `data_service.py` `require_api_token` | 改为服务间鉴权 | `DATA_API_TOKEN` 变为"中间层→data_service 的服务间 key" |
-| `app.py`/langgraph | 加服务间鉴权 | 只允许中间层调，不直接面向前端 |
+| `data_service/app.py` register/login/logout | 保留，加 JWT 签发 | data_service 兼任中间层，是唯一面向前端的入口 |
+| `data_service/app.py` `require_api_token` | 改为用户 JWT 鉴权 | 从静态 API key 改为验 Bearer JWT |
+| `app.py`/langgraph | 加服务间鉴权 | 只允许 data_service 调，不直接面向前端 |
 | `alert.py` 管理后台 | **不动** | 管理员鉴权与用户 JWT 本就是两套 |
-| 前端 `app.js` | 改调中间层 `/auth/*` | 不再直连 data_service 和 langgraph |
+| 前端 `app.js` | 改调 data_service `/auth/*` + `/chat` | 不再直连 langgraph |
 
 ---
 
@@ -154,22 +155,22 @@ GET /auth/me
 | Refresh token 存 httpOnly cookie | `Set-Cookie: refresh=...; HttpOnly; Secure; SameSite=Strict` | 必须 |
 | HTTPS only | 生产环境强制，开发用 localhost 豁免 | 生产必须 |
 | Token 吊销 | refresh token 存 DB，logout 时标记 revoked；access 靠短命自然过期 | 推荐 |
-| CORS | 中间层只允许前端域名 | 必须 |
+| CORS | data_service 只允许前端域名 | 必须 |
 | 密码哈希 | 现有 `generate_password_hash`（werkzeug）已够用 | 已满足 |
 
 ---
 
 ## 8. 落地改动清单
 
-中间层建好后按此清单推进：
+/chat 链路跑通后按此清单推进：
 
 | # | 改动 | 负责人 | 层次 | 触及边界 |
 |---|---|---|---|---|
-| 1 | 中间层实现 `/auth/login` `/auth/refresh` `/auth/me` `/auth/logout`，用 PyJWT 签发/验证 | 王力涵 | L2 | 是（新增接口） |
+| 1 | data_service 实现 `/auth/login` `/auth/refresh` `/auth/me` `/auth/logout`，用 PyJWT 签发/验证 | 王力涵 | L2 | 是（新增接口） |
 | 2 | `data_layer.py` session 方法改为 refresh token 存储，token_hash 用 SHA-256 | 王力涵 | L0 | 是（DataStore 公共方法） |
-| 3 | `data_service.py` 去掉 register/login/logout，`require_api_token` 改为服务间鉴权 | 王力涵 | L2 | 是（/api/* 接口） |
+| 3 | `data_service/app.py` `require_api_token` 改为用户 JWT 鉴权 | 王力涵 | L2 | 是（/api/* 接口） |
 | 4 | `app.py`/langgraph 加服务间鉴权 | 蒋状钊 | L2 | 是 |
-| 5 | 前端改调中间层，token 存内存 + refresh cookie | 袁群 | L3 | 是 |
+| 5 | 前端改调 data_service，token 存内存 + refresh cookie | 袁群 | L3 | 是 |
 | 6 | `API_CONTRACT.md §7` 更新：匿名→JWT 鉴权，补 token 模型和接口定义 | 共同 | 文档 | 是 |
 | 7 | `.env.example` 加 `JWT_SECRET`、`SERVICE_API_KEY` | 王力涵 | L0 | 是 |
 
