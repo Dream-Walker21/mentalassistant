@@ -17,9 +17,9 @@ import sys
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 VENV = ROOT / ".venv"
-PANEL = ROOT / "live2d_demo"
+PANEL = ROOT / "web" / "live2d_demo"
 SDK_DEMO = ROOT / "CubismSdkForWeb-5-r.5" / "Samples" / "TypeScript" / "Demo"
 
 
@@ -53,12 +53,13 @@ def ensure_env() -> None:
 
 
 def install_dependencies() -> None:
+    uv = shutil.which("uv") or shutil.which("uv.exe")
+    if not uv:
+        raise FileNotFoundError("找不到 uv。请先安装 uv：pip install uv 或 powershell iex (irm https://astral.sh/uv/install.ps1)")
     if not python_executable().exists():
-        print("[Python] 创建虚拟环境")
-        run([sys.executable, "-m", "venv", str(VENV)])
-    py = str(python_executable())
-    run([py, "-m", "pip", "install", "--upgrade", "pip", "wheel"])
-    run([py, "-m", "pip", "install", "-r", str(ROOT / "requirements.txt")])
+        print("[Python] 创建虚拟环境 (uv venv)")
+        run([uv, "venv", str(VENV)])
+    run([uv, "pip", "install", "--python", str(python_executable()), "-r", str(ROOT / "requirements.txt")])
 
     npm = npm_executable()
     if not (PANEL / "node_modules").exists():
@@ -75,7 +76,7 @@ def write_launcher() -> Path:
         "@echo off\r\n"
         f"cd /d \"{ROOT}\"\r\n"
         "echo Starting XinQing services...\r\n"
-        f"\"{python_executable()}\" \"{ROOT / 'start_live2d.py'}\" %*\r\n"
+        f"\"{python_executable()}\" \"{ROOT / 'scripts' / 'start_live2d.py'}\" %*\r\n"
         "pause\r\n",
         encoding="utf-8",
         newline="",
@@ -116,7 +117,7 @@ def main() -> int:
         print(f"准备完成。可运行：\n  {launcher} --with-data --with-langgraph")
         return 0
 
-    command = [str(python_executable()), str(ROOT / "start_live2d.py")]
+    command = [str(python_executable()), str(ROOT / "scripts" / "start_live2d.py")]
     if args.with_data:
         command.append("--with-data")
     if args.with_alert:

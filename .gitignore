@@ -5,8 +5,8 @@ __pycache__/
 .venv/
 .conda/
 .langgraph_api/
-live2d_demo/node_modules/
-live2d_demo/vendor/live2dcubismcore.min.js
+web/live2d_demo/node_modules/
+web/live2d_demo/vendor/live2dcubismcore.min.js
 .vite/
 dist/
 start_xinqing_windows.bat
@@ -52,4 +52,6 @@ knowledgefile/*.pdf
 # OS/editor files
 .DS_Store
 Thumbs.db
+desktop.ini
 .idea/
+.arts/

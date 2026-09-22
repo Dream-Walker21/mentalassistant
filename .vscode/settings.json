@@ -1,15 +1,15 @@
 {
-  "python.defaultInterpreterPath": "D:\\anaconda\\envs\\pyenv0\\python.exe",
+  "python.defaultInterpreterPath": ".venv\\Scripts\\python.exe",
   "python.terminal.activateEnvironment": true,
   "code-runner.runInTerminal": true,
   "code-runner.executorMap": {
-    "python": "D:\\anaconda\\envs\\pyenv0\\python.exe -u"
+    "python": ".venv\\Scripts\\python.exe -u"
   },
   "python-envs.pythonProjects": [
     {
       "path": ".",
-      "envManager": "ms-python.python:conda",
-      "packageManager": "ms-python.python:conda"
+      "envManager": "ms-python.python:uv",
+      "packageManager": "ms-python.python:uv"
     }
   ]
 }

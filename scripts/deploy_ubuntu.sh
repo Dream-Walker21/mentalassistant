@@ -9,7 +9,7 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DOMAIN="_"
 INSTALL_DIR="$PROJECT_DIR"
 SERVICE_USER="${SUDO_USER:-$USER}"
-PYTHON_BIN="python3"
+
 NODE_MAJOR="20"
 DISABLE_RAG="0"
 SKIP_APT="0"
@@ -63,7 +63,13 @@ if [[ "$SKIP_APT" != "1" ]]; then
   log "安装系统依赖"
   $SUDO apt-get update
   $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y \
-    python3 python3-venv python3-pip build-essential curl nginx
+    build-essential curl nginx
+fi
+
+if ! command -v uv >/dev/null 2>&1; then
+  log "安装 uv"
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  export PATH="$HOME/.local/bin:$PATH"
 fi
 
 if ! command -v node >/dev/null 2>&1; then
@@ -78,17 +84,16 @@ $SUDO chown -R "$SERVICE_USER":"$SERVICE_USER" "$INSTALL_DIR"
 
 VENV="$INSTALL_DIR/.venv"
 if [[ ! -x "$VENV/bin/python" ]]; then
-  log "创建 Python 虚拟环境"
-  "$PYTHON_BIN" -m venv "$VENV"
+  log "创建 Python 虚拟环境 (uv venv)"
+  uv venv "$VENV"
 fi
 
 log "安装 Python 依赖"
-"$VENV/bin/python" -m pip install --upgrade pip wheel
-"$VENV/bin/pip" install -r "$INSTALL_DIR/requirements.txt"
+uv pip install --python "$VENV/bin/python" -r "$INSTALL_DIR/requirements.txt"
 
-if [[ ! -d "$INSTALL_DIR/live2d_demo/node_modules" ]]; then
+if [[ ! -d "$INSTALL_DIR/web/live2d_demo/node_modules" ]]; then
   log "安装 Live2D 前端依赖"
-  (cd "$INSTALL_DIR/live2d_demo" && npm install)
+  (cd "$INSTALL_DIR/web/live2d_demo" && npm install)
 fi
 
 if [[ -d "$INSTALL_DIR/CubismSdkForWeb-5-r.5/Samples/TypeScript/Demo" && \
@@ -117,7 +122,7 @@ fi
 log "发布前端静态文件"
 rm -rf "$INSTALL_DIR/dist"
 mkdir -p "$INSTALL_DIR/dist/live2d_demo"
-cp -a "$INSTALL_DIR/live2d_demo/." "$INSTALL_DIR/dist/live2d_demo/"
+cp -a "$INSTALL_DIR/web/live2d_demo/." "$INSTALL_DIR/dist/live2d_demo/"
 if [[ ! -f "$INSTALL_DIR/dist/live2d_demo/index.html" ]]; then
   fail "前端发布失败：找不到 dist/live2d_demo/index.html"
 fi
@@ -126,8 +131,8 @@ if [[ "$ENABLE_SYSTEMD" == "1" ]]; then
   log "生成 systemd 服务"
   for service in data alert langgraph; do
     case "$service" in
-      data) description="XinQing Data API"; command="$VENV/bin/python $INSTALL_DIR/data_service.py"; after="network.target" ;;
-      alert) description="XinQing Alert API"; command="$VENV/bin/python $INSTALL_DIR/alert.py"; after="network.target xinqing-data.service" ;;
+      data) description="XinQing Data API"; command="$VENV/bin/python $INSTALL_DIR/src/xinqing/data_service.py"; after="network.target" ;;
+      alert) description="XinQing Alert API"; command="$VENV/bin/python $INSTALL_DIR/src/xinqing/alert.py"; after="network.target xinqing-data.service" ;;
       langgraph) description="XinQing LangGraph"; command="$VENV/bin/langgraph dev --host 127.0.0.1 --port 2024"; after="network.target xinqing-data.service xinqing-alert.service" ;;
     esac
     $SUDO tee "/etc/systemd/system/xinqing-${service}.service" >/dev/null <<EOF
@@ -227,7 +232,7 @@ cat <<EOF
 
 下一步：
 1. 编辑 $INSTALL_DIR/.env，填写 API Key、管理员密码、SMTP 配置。
-2. 修改 live2d_demo/live2d-adapter.js，把 SDK 地址改成 /live2d-sdk/。
+2. 修改 web/live2d_demo/live2d-adapter.js，把 SDK 地址改成 /live2d-sdk/。
 3. 将 Cubism Demo 作为 127.0.0.1:8084 服务运行，并在其 postMessage 校验中加入正式域名。
 4. 配置 HTTPS：sudo certbot --nginx -d $DOMAIN
 5. 查看日志：journalctl -u xinqing-langgraph -f

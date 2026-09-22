@@ -22,9 +22,10 @@ import webbrowser
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
+SRC = ROOT / "src" / "xinqing"
 SDK_DEMO = ROOT / "CubismSdkForWeb-5-r.5" / "Samples" / "TypeScript" / "Demo"
-PANEL = ROOT / "live2d_demo"
+PANEL = ROOT / "web" / "live2d_demo"
 
 
 def port_is_open(port: int) -> bool:
@@ -65,7 +66,7 @@ def locate_node(explicit: str | None) -> str:
 
 
 def locate_langgraph(explicit: str | None) -> list[str]:
-    """Find the LangGraph CLI even when this script runs from conda base."""
+    """Find the LangGraph CLI in the project .venv or PATH."""
     candidates: list[Path] = []
     if explicit:
         candidates.append(Path(explicit))
@@ -80,18 +81,9 @@ def locate_langgraph(explicit: str | None) -> list[str]:
     candidates.append(python_path.with_name("langgraph.exe"))
     if python_path.parent.name.lower() == "python":
         candidates.append(python_path.parent.parent / "Scripts" / "langgraph.exe")
-    conda_root = python_path.parent if python_path.name.lower() == "python.exe" else python_path.parent.parent
-    candidates.append(conda_root / "envs" / "pyenv0" / "Scripts" / "langgraph.exe")
-    for conda_hint in (os.environ.get("CONDA_PREFIX"), os.environ.get("CONDA_EXE")):
-        if not conda_hint:
-            continue
-        hint = Path(conda_hint).resolve()
-        root = hint.parent if hint.name.lower() in {"conda.exe", "conda-script.py"} else hint
-        candidates.append(root / "envs" / "pyenv0" / "Scripts" / "langgraph.exe")
-    candidates.extend(
-        Path(root) / "envs" / "pyenv0" / "Scripts" / "langgraph.exe"
-        for root in (r"D:\anaconda", r"C:\ProgramData\anaconda3", r"C:\Users\27732\anaconda3")
-    )
+    # uv venv layout: .venv/Scripts/langgraph.exe
+    candidates.append(ROOT / ".venv" / "Scripts" / "langgraph.exe")
+    candidates.append(ROOT / ".venv" / "bin" / "langgraph")
     for candidate in candidates:
         if candidate.is_file():
             return [str(candidate)]
@@ -105,7 +97,7 @@ def locate_langgraph(explicit: str | None) -> list[str]:
     else:
         return [sys.executable, "-m", "langgraph_cli"]
     raise FileNotFoundError(
-        "找不到 langgraph 命令。请在 pyenv0 中安装 langgraph-cli，或设置 XINQING_LANGGRAPH 指向 langgraph.exe。"
+        "找不到 langgraph 命令。请运行 uv pip install langgraph-cli[inmem]，或设置 XINQING_LANGGRAPH 指向 langgraph.exe。"
     )
 
 
@@ -193,7 +185,7 @@ def main() -> int:
         if args.with_data:
             start_process(
                 "Data API",
-                [sys.executable, str(ROOT / "data_service.py")],
+                [sys.executable, str(SRC / "data_service.py")],
                 ROOT,
                 8001,
                 owned,
@@ -203,7 +195,7 @@ def main() -> int:
             print("[Alert] 已显式启用预警服务；请确认 .env 中的 SMTP 配置和 ALERT_CHANNEL。")
             start_process(
                 "Alert API",
-                [sys.executable, str(ROOT / "alert.py")],
+                [sys.executable, str(SRC / "alert.py")],
                 ROOT,
                 5000,
                 owned,

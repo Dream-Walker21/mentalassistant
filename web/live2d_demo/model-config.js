@@ -1,5 +1,5 @@
 export const HIYORI_FREE_MODEL_URL =
-  "../hiyori_zh-Hans/hiyori_free/runtime/hiyori_free_t08.model3.json";
+  "../../hiyori_zh-Hans/hiyori_free/runtime/hiyori_free_t08.model3.json";
 
 // These names come directly from hiyori_free_t08.model3.json. Keep business
 // semantics here so LangGraph never needs to know a model-specific motion name.

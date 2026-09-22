@@ -8,18 +8,49 @@
           ├─ condition_judgement -> 对话历史评估 -> 状态说明
           └─ crisis -> 危机知识检索 -> 结构化风险评估 -> 告警 -> 危机支持回复
                                       ↓
-                         统一进入立绘动作选择 -> HTTP/函数发送
+                          统一进入立绘动作选择 -> HTTP/函数发送
+```
+
+## 项目结构
+
+```
+mentalassistant/
+├── src/xinqing/          # 智能体源码（LangGraph 工作流 + 服务）
+│   ├── app.py            # LangGraph CLI/Studio 入口
+│   ├── graph.py          # StateGraph 主流程
+│   ├── config.py         # 配置（DeepSeek、告警、数据层）
+│   ├── prompts.py        # 各节点 prompt
+│   ├── ingest.py         # 知识库导入 Chroma
+│   ├── alert.py          # 告警服务（邮件/webhook/log）
+│   ├── data_layer.py     # SQLite 数据层
+│   └── data_service.py   # 用户数据 REST API
+├── web/live2d_demo/      # Live2D 测试前端
+├── docs/                 # 项目文档
+│   ├── API_CONTRACT.md   # 前后端接口契约
+│   └── assets/           # 项目书、公式素材
+├── scripts/              # 部署与运维脚本
+│   ├── deploy_ubuntu.sh
+│   ├── deploy_windows.py
+│   └── start_live2d.py
+├── knowledgefile/        # 知识库原始资料
+├── tests/                # 测试
+├── langgraph.json        # LangGraph 配置
+├── requirements.txt
+├── .env.example
+└── README.md
 ```
 
 ## 依赖和运行
 
 ```powershell
 cd E:\work\mentaldemo
-python -m venv .venv
+uv venv
 .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-pip install -U "langgraph-cli[inmem]"
+uv pip install -r requirements.txt
+uv pip install -U "langgraph-cli[inmem]"
 ```
+
+也可以直接用 `uv sync` 一键安装 `pyproject.toml` 中声明的依赖。
 
 配置仍然留在应用边界，不写进图代码。`build_graph()` 接受以下可选依赖：
 
@@ -81,37 +112,36 @@ print(result["response"])
 | `knowledgefile/mental.pdf` | `mental_health` | 精神障碍诊疗规范参考 |
 | `knowledgefile/WHO_心理急救_训练现场工作者的指导员手册.pdf` | `crisis_first_aid` | WHO 心理急救与现场支持 |
 
-Dify 的 `dataset_id`、切分结果和索引不能直接导入。运行 [ingest.py](E:/work/mentaldemo/ingest.py) 会读取 Markdown/PDF，按中文标点切成带 metadata 的片段，并写入本地 Chroma 索引。Embedding 模型默认由 ModelScope 下载，不再访问 Hugging Face：
+Dify 的 `dataset_id`、切分结果和索引不能直接导入。运行 [ingest.py](E:/work/mentaldemo/src/xinqing/ingest.py) 会读取 Markdown/PDF，按中文标点切成带 metadata 的片段，并写入本地 Chroma 索引。Embedding 模型默认由 ModelScope 下载，不再访问 Hugging Face：
 
 ```powershell
-conda activate pyenv0
 cd E:\work\mentaldemo
-pip install -r requirements.txt
-python ingest.py
+uv venv
+uv pip install -r requirements.txt
+uv run python -m src.xinqing.ingest
 ```
 
-如果出现 `tf_keras` 或 `Keras 3` 错误，通常是 `pip` 把包装到了用户目录而不是 `pyenv0`。请在同一个环境中执行：
+如果出现 `tf_keras` 或 `Keras 3` 错误，通常是依赖被装到了用户目录而非项目 `.venv`。用 `uv pip install` 代替裸 `pip` 即可避免：
 
 ```powershell
-conda activate pyenv0
 $env:PYTHONNOUSERSITE = "1"
-python -c "import sys; print(sys.executable)"
-python -m pip install -r requirements.txt
-python -s ingest.py
+uv run python -c "import sys; print(sys.executable)"
+uv pip install -r requirements.txt
+uv run python -m src.xinqing.ingest
 ```
 
-输出的 Python 路径必须是 `D:\anaconda\envs\pyenv0\python.exe`。`ingest.py` 已默认禁用不需要的 TensorFlow 后端；不要为这个 RAG 导入任务安装 `tf-keras`，除非你的其它项目确实需要 TensorFlow。
+输出的 Python 路径应指向项目内 `.venv\Scripts\python.exe`。`ingest.py` 已默认禁用不需要的 TensorFlow 后端；不要为这个 RAG 导入任务安装 `tf-keras`，除非你的其它项目确实需要 TensorFlow。
 
 首次运行会通过 ModelScope 下载 `BAAI/bge-m3` 到 `E:\work\mentaldemo\models\bge-m3`；下载中断后再次执行同一条命令可继续。脚本只下载 Chroma 所需的 PyTorch、Tokenizer 和 Sentence Transformers 配置，不下载可选的 ONNX 推理权重。也可以自行指定模型保存目录：
 
 ```powershell
-python -s ingest.py --model-dir "E:\models\bge-m3"
+python -m src.xinqing.ingest --model-dir "E:\models\bge-m3"
 ```
 
 如果模型已经位于某个完整的本地目录，则传入该目录后不会再联网下载：
 
 ```powershell
-python -s ingest.py --embedding-model "E:\models\bge-m3"
+python -m src.xinqing.ingest --embedding-model "E:\models\bge-m3"
 ```
 
 应用侧用 `load_retrievers()` 打开四个集合，再传入 `build_graph(retrievers=...)`。危机路径会同时查询 `mental_health` 和 `crisis_first_aid`。查询时 `k=4` 与原 Dify 工作流的 Top-K 保持一致。
@@ -131,7 +161,7 @@ $env:XINQING_RAG_DIR = "E:\XinQingAssistant\chroma"
 如果导入过程中被中断，可使用 `--reset` 删除旧的、可再生的 Chroma 索引后重建：
 
 ```powershell
-python -s ingest.py --reset
+python -m src.xinqing.ingest --reset
 ```
 
 `--reset` 只会删除项目内 `data\chroma` 索引目录，不会删除 `knowledgefile` 中的原始资料或 `models` 中的 Embedding 模型。
@@ -139,7 +169,7 @@ python -s ingest.py --reset
 导入时会显示每个集合的读取、切分和 Chroma 写入批次进度。默认每批处理 64 个片段；CPU 内存不足时可调低为 16 或 32：
 
 ```powershell
-python -s ingest.py --reset --batch-size 32
+python -m src.xinqing.ingest --reset --batch-size 32
 ```
 
 脚本在结束前会清除当前进程的 Chroma client 缓存，再重新打开三个集合并校验记录数；只有看到 `Chroma 持久化校验通过。` 和三个 chunks 统计行，才表示索引可被后续 RAG 查询使用。
@@ -148,15 +178,14 @@ PDF 若是扫描图片而没有文本层，需要先 OCR；当前三个文件可
 
 ## 导入 LangGraph
 
-LangGraph 不支持直接导入 Dify 的 `workflow.yml`；Dify YAML 是 Dify 私有格式，当前 [graph.py](E:/work/mentaldemo/graph.py) 是对应的 Python `StateGraph` 重实现。[langgraph.json](E:/work/mentaldemo/langgraph.json) 和 [app.py](E:/work/mentaldemo/app.py) 已提供 CLI/Studio 入口：
+LangGraph 不支持直接导入 Dify 的 `workflow.yml`；Dify YAML 是 Dify 私有格式，当前 [graph.py](E:/work/mentaldemo/src/xinqing/graph.py) 是对应的 Python `StateGraph` 重实现。[langgraph.json](E:/work/mentaldemo/langgraph.json) 和 [app.py](E:/work/mentaldemo/src/xinqing/app.py) 已提供 CLI/Studio 入口：
 
 ```powershell
-conda activate pyenv0
 cd E:\work\mentaldemo
-langgraph dev
+uv run langgraph dev
 ```
 
-当前 LangGraph CLI 要求 Python 3.11 或更高版本；可先运行 `python --version` 检查。`langgraph dev` 会启动本地 Agent Server，默认地址通常是 `http://127.0.0.1:2024`，再用输出中的 Studio 地址打开图。
+当前 LangGraph CLI 要求 Python 3.11 或更高版本；可先运行 `uv run python --version` 检查。`langgraph dev` 会启动本地 Agent Server，默认地址通常是 `http://127.0.0.1:2024`，再用输出中的 Studio 地址打开图。
 
 `app.py` 默认会加载 `data\chroma` 下的四个 Retriever 并构造完整工作流；如果只想查看图结构、暂时跳过 Embedding 模型加载，可设置 `XINQING_DISABLE_RAG=1`。
 
@@ -194,10 +223,10 @@ graph = build_graph(retrievers=retrievers, alert_http_url="http://127.0.0.1:5000
 LangGraph 只向告警接口发送 JSON，不直接连接 SMTP。启动接收和发送服务：
 
 ```powershell
-python E:\work\mentaldemo\alert.py
+python E:\work\mentaldemo\src\xinqing\alert.py
 ```
 
-`alert.py` 会自动读取项目目录下的 `.env` 文件；终端中已经设置的同名环境变量优先于 `.env`。如果使用已有环境运行，可先执行 `python -m pip install -r requirements.txt` 安装 `python-dotenv`。
+`src/xinqing/alert.py` 会自动读取项目目录下的 `.env` 文件；终端中已经设置的同名环境变量优先于 `.env`。如果使用已有环境运行，可先执行 `python -m pip install -r requirements.txt` 安装 `python-dotenv`。
 
 默认通道是邮件。请通过环境变量配置，不要把密码写入源代码：
 
@@ -229,9 +258,8 @@ $env:ALERT_WEBHOOK_URL = "https://example.com/alert"
 启动数据 API：
 
 ```powershell
-conda activate pyenv0
 cd E:\work\mentaldemo
-python data_service.py
+uv run python src\xinqing\data_service.py
 ```
 
 默认地址为 `http://127.0.0.1:8001`。配置 `DATA_API_TOKEN` 后，所有 `/api/*` 请求必须带 `X-API-Key`。主要接口为：
@@ -247,7 +275,7 @@ LangGraph 在每轮请求的 `prepare` 节点中会按 `user_id` 查询或创建
 
 ## Live2D 测试前端
 
-`live2d_demo` 是使用 Hiyori Free 和官方 Cubism SDK Web Framework 的测试面板。它保留了工作流的 `avatar_command` 协议，动作按钮和文本测试会通过 `postMessage` 调用官方 SDK Demo 中的 `LAppModel`。第三方旧 Pixi renderer 不再参与绘制，因此可与 `CubismSdkForWeb-5-r.5` 的 Core 配套使用。
+`web/live2d_demo` 是使用 Hiyori Free 和官方 Cubism SDK Web Framework 的测试面板。它保留了工作流的 `avatar_command` 协议，动作按钮和文本测试会通过 `postMessage` 调用官方 SDK Demo 中的 `LAppModel`。第三方旧 Pixi renderer 不再参与绘制，因此可与 `CubismSdkForWeb-5-r.5` 的 Core 配套使用。
 
 首次准备官方 SDK Demo 时，在 SDK 示例目录运行：
 
@@ -264,21 +292,20 @@ cd E:\work\mentaldemo\CubismSdkForWeb-5-r.5\Samples\TypeScript\Demo
 pnpm exec vite --host 127.0.0.1 --port 8084
 
 # 终端 2：心晴助手动作测试面板
-cd E:\work\mentaldemo\live2d_demo
+cd E:\work\mentaldemo\web\live2d_demo
 pnpm dev
 ```
 
-打开 `http://127.0.0.1:8083/live2d_demo/`。`8084` 是面板内部使用的官方 SDK Demo，不要关闭。`live2d_demo/vendor` 中的 Cubism Core 和模型/SDK 目录均已加入 Git 忽略规则，不应提交到公开仓库。
+打开 `http://127.0.0.1:8083/live2d_demo/`。`8084` 是面板内部使用的官方 SDK Demo，不要关闭。`web/live2d_demo/vendor` 中的 Cubism Core 和模型/SDK 目录均已加入 Git 忽略规则，不应提交到公开仓库。
 
-也可以用项目根目录的 `start_live2d.py` 一键启动预览。它会自动同步 SDK 资源、启动 8084 官方 Demo 和 8083 控制面板，并在结束时清理由脚本启动的子进程：
+也可以用 `scripts/start_live2d.py` 一键启动预览。它会自动同步 SDK 资源、启动 8084 官方 Demo 和 8083 控制面板，并在结束时清理由脚本启动的子进程：
 
 ```powershell
-conda activate pyenv0
 cd E:\work\mentaldemo
-python start_live2d.py
+uv run python scripts\start_live2d.py
 ```
 
-不想自动打开浏览器时使用 `python start_live2d.py --no-browser`。需要联调数据层时显式追加 `--with-data`；需要启动预警服务时追加 `--with-alert`；需要同时启动 LangGraph 时追加 `--with-langgraph`。默认不启动这三个后端，避免测试 Live2D 时误触发邮件告警。
+不想自动打开浏览器时使用 `uv run python scripts\start_live2d.py --no-browser`。需要联调数据层时显式追加 `--with-data`；需要启动预警服务时追加 `--with-alert`；需要同时启动 LangGraph 时追加 `--with-langgraph`。默认不启动这三个后端，避免测试 Live2D 时误触发邮件告警。
 
 ### LLM 回复如何驱动人物动作
 

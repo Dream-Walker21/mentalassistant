@@ -23,7 +23,7 @@ os.environ.setdefault("USE_TF", "0")
 os.environ.setdefault("TRANSFORMERS_NO_TF", "1")
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent.parent
 KNOWLEDGE_DIR = ROOT / "knowledgefile"
 # The standalone project uses an ASCII-only root path, so Chroma can safely
 # persist beside the code without the Windows HNSW Unicode-path issue.

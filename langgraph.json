@@ -1,7 +1,7 @@
 {
-  "dependencies": ["."],
+  "dependencies": ["./src/xinqing"],
   "graphs": {
-    "xin_qing": "./app.py:graph"
+    "xin_qing": "./src/xinqing/app.py:graph"
   },
   "env": ".env"
 }
