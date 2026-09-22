@@ -1,10 +1,5 @@
 """Smoke tests for logging_config.setup_logging()."""
 
-import io
-import json
-import logging
-import os
-
 import structlog
 
 

@@ -9,19 +9,15 @@ from __future__ import annotations
 
 import os
 import secrets
+from collections.abc import Callable
 from functools import wraps
-from typing import Any, Callable
+from typing import Any
 
 import structlog
 from flask import Flask, jsonify, request
 
-try:
-    from .data_layer import DataStore, validate_user_id
-    from .logging_config import setup_logging
-except ImportError:
-    from data_layer import DataStore, validate_user_id
-    from logging_config import setup_logging
-
+from ..common.data_layer import DataStore, validate_user_id
+from ..common.logging_config import setup_logging
 
 setup_logging()
 logger = structlog.get_logger("xinqing.data_service")
@@ -42,6 +38,7 @@ def require_api_token(view: Callable[..., Any]) -> Callable[..., Any]:
         if not token or not secrets.compare_digest(token, DATA_API_TOKEN):
             return jsonify({"status": "error", "error": "未授权"}), 401
         return view(*args, **kwargs)
+
     return wrapped
 
 
@@ -61,7 +58,12 @@ def bearer_token() -> str:
 @require_api_token
 def register() -> Any:
     body = payload()
-    user = store.register_user(body.get("nickname"), body.get("password"), body.get("real_name"), body.get("emergency_contacts"))
+    user = store.register_user(
+        body.get("nickname"),
+        body.get("password"),
+        body.get("real_name"),
+        body.get("emergency_contacts"),
+    )
     token = store.create_session(user["user_id"])
     return jsonify({"status": "success", "token": token, "user": user}), 201
 
@@ -73,7 +75,9 @@ def login() -> Any:
     user = store.authenticate_user(body.get("nickname"), body.get("password"))
     if user is None:
         return jsonify({"status": "error", "error": "昵称或密码不正确"}), 401
-    return jsonify({"status": "success", "token": store.create_session(user["user_id"]), "user": user})
+    return jsonify(
+        {"status": "success", "token": store.create_session(user["user_id"]), "user": user}
+    )
 
 
 @app.post("/api/auth/logout")
@@ -92,7 +96,14 @@ def bad_request(error: ValueError) -> Any:
 
 @app.get("/health")
 def health() -> Any:
-    return jsonify({"status": "healthy", "service": "xin-qing-data", "tts_provider": "gpt-sovits", "tts_configured": bool(os.getenv("GPT_SOVITS_BASE_URL", "").strip())})
+    return jsonify(
+        {
+            "status": "healthy",
+            "service": "xin-qing-data",
+            "tts_provider": "gpt-sovits",
+            "tts_configured": bool(os.getenv("GPT_SOVITS_BASE_URL", "").strip()),
+        }
+    )
 
 
 @app.route("/api/users/<user_id>", methods=["GET", "PUT", "DELETE"])
@@ -121,9 +132,18 @@ def user_context(user_id: str) -> Any:
 @require_api_token
 def conversations(user_id: str) -> Any:
     if request.method == "GET":
-        return jsonify({"status": "success", "conversations": store.list_conversations(user_id, int(request.args.get("limit", 50)))})
+        return jsonify(
+            {
+                "status": "success",
+                "conversations": store.list_conversations(
+                    user_id, int(request.args.get("limit", 50))
+                ),
+            }
+        )
     body = payload()
-    conversation_id = store.ensure_conversation(user_id, body.get("conversation_id"), body.get("title", ""))
+    conversation_id = store.ensure_conversation(
+        user_id, body.get("conversation_id"), body.get("title", "")
+    )
     return jsonify({"status": "success", "conversation_id": conversation_id}), 201
 
 
@@ -131,12 +151,19 @@ def conversations(user_id: str) -> Any:
 @require_api_token
 def assessments(user_id: str) -> Any:
     if request.method == "GET":
-        return jsonify({"status": "success", "assessments": store.list_assessments(user_id, int(request.args.get("limit", 30)))})
+        return jsonify(
+            {
+                "status": "success",
+                "assessments": store.list_assessments(user_id, int(request.args.get("limit", 30))),
+            }
+        )
     body = payload()
     assessment = body.get("assessment")
     if not isinstance(assessment, dict):
         raise ValueError("assessment 必须是对象")
-    saved = store.save_assessment(user_id, str(body.get("assessment_type", "manual")), assessment, body.get("conversation_id"))
+    saved = store.save_assessment(
+        user_id, str(body.get("assessment_type", "manual")), assessment, body.get("conversation_id")
+    )
     return jsonify({"status": "success", "assessment": saved}), 201
 
 
@@ -147,11 +174,24 @@ def messages(conversation_id: str) -> Any:
         user_id = request.args.get("user_id")
         if not user_id:
             raise ValueError("需要 user_id 查询参数")
-        return jsonify({"status": "success", "messages": store.list_messages(user_id, conversation_id, int(request.args.get("limit", 100)))})
+        return jsonify(
+            {
+                "status": "success",
+                "messages": store.list_messages(
+                    user_id, conversation_id, int(request.args.get("limit", 100))
+                ),
+            }
+        )
     body = payload()
     if "user_id" not in body:
         raise ValueError("需要 user_id")
-    message = store.add_message(body["user_id"], conversation_id, str(body.get("role", "")), body.get("content", ""), body.get("metadata"))
+    message = store.add_message(
+        body["user_id"],
+        conversation_id,
+        str(body.get("role", "")),
+        body.get("content", ""),
+        body.get("metadata"),
+    )
     return jsonify({"status": "success", "message": message}), 201
 
 
@@ -162,13 +202,22 @@ def tts_synthesize() -> Any:
     body = payload()
     if "user_id" not in body:
         raise ValueError("需要 user_id")
-    job = store.create_tts_job(body["user_id"], body.get("text", ""), body.get("conversation_id"), body.get("voice_profile", ""))
-    job = store.update_tts_job(job["user_id"], job["job_id"], "not_configured", "尚未配置 GPT_SOVITS_BASE_URL 与适配器")
-    return jsonify({
-        "status": "not_configured",
-        "job": job,
-        "message": "已保留 GPT-SoVITS 任务接口，等待后续配置服务地址和请求适配器。",
-    }), 501
+    job = store.create_tts_job(
+        body["user_id"],
+        body.get("text", ""),
+        body.get("conversation_id"),
+        body.get("voice_profile", ""),
+    )
+    job = store.update_tts_job(
+        job["user_id"], job["job_id"], "not_configured", "尚未配置 GPT_SOVITS_BASE_URL 与适配器"
+    )
+    return jsonify(
+        {
+            "status": "not_configured",
+            "job": job,
+            "message": "已保留 GPT-SoVITS 任务接口，等待后续配置服务地址和请求适配器。",
+        }
+    ), 501
 
 
 @app.get("/api/users/<user_id>/tts/jobs/<job_id>")

@@ -185,21 +185,21 @@ def main() -> int:
         if args.with_data:
             start_process(
                 "Data API",
-                [sys.executable, str(SRC / "data_service.py")],
+                [sys.executable, "-m", "xinqing.data_service.app"],
                 ROOT,
                 8001,
                 owned,
-                {"PYTHONNOUSERSITE": "1", "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+                {"PYTHONNOUSERSITE": "1", "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8", "PYTHONPATH": str(ROOT / "src")},
             )
         if args.with_alert:
             print("[Alert] 已显式启用预警服务；请确认 .env 中的 SMTP 配置和 ALERT_CHANNEL。")
             start_process(
                 "Alert API",
-                [sys.executable, str(SRC / "alert.py")],
+                [sys.executable, "-m", "xinqing.data_service.alert"],
                 ROOT,
                 5000,
                 owned,
-                {"PYTHONNOUSERSITE": "1", "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+                {"PYTHONNOUSERSITE": "1", "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8", "PYTHONPATH": str(ROOT / "src")},
             )
         if args.with_langgraph:
             langgraph = locate_langgraph(args.langgraph)

@@ -12,9 +12,8 @@ import gc
 import os
 import re
 import shutil
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Dict, Iterable, List
-
 
 # RAG ingestion uses PyTorch Sentence Transformers only. Prevent an unrelated
 # TensorFlow/Keras installation in the user site-packages from being imported
@@ -76,8 +75,7 @@ def _is_embedding_model_ready(model_dir: Path) -> bool:
     """Return whether a Sentence Transformers BGE-M3 snapshot is complete."""
 
     has_weights = any(
-        (model_dir / filename).is_file()
-        for filename in ("model.safetensors", "pytorch_model.bin")
+        (model_dir / filename).is_file() for filename in ("model.safetensors", "pytorch_model.bin")
     )
     return (
         has_weights
@@ -201,7 +199,7 @@ def _load_source(path: Path, collection: str):
     raise ValueError(f"不支持的知识库文件类型: {path}")
 
 
-def _split_documents(documents: Iterable, collection: str) -> List:
+def _split_documents(documents: Iterable, collection: str) -> list:
     from langchain_text_splitters import RecursiveCharacterTextSplitter
 
     splitter = RecursiveCharacterTextSplitter(
@@ -229,7 +227,7 @@ def build_collections(
     collections: Iterable[str] = SOURCE_MAP.keys(),
     reset: bool = False,
     batch_size: int = 64,
-) -> Dict[str, int]:
+) -> dict[str, int]:
     """Load, split and persist each source into its own Chroma collection."""
 
     import chromadb
@@ -253,7 +251,7 @@ def build_collections(
     print("Embedding 模型加载完成，开始处理知识库。", flush=True)
     output_dir.mkdir(parents=True, exist_ok=True)
     client = chromadb.PersistentClient(path=str(output_dir))
-    counts: Dict[str, int] = {}
+    counts: dict[str, int] = {}
     for collection in collections:
         if collection not in SOURCE_MAP:
             raise KeyError(f"未知集合: {collection}")
@@ -311,7 +309,7 @@ def load_retrievers(
     embedding_model: str = MODELSCOPE_EMBEDDING_MODEL,
     model_dir: Path = LOCAL_EMBEDDING_DIR,
     k: int = 4,
-) -> Dict[str, object]:
+) -> dict[str, object]:
     """Open persisted Chroma collections in the shape expected by build_graph."""
 
     import chromadb

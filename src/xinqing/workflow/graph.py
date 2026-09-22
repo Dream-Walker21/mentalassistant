@@ -11,56 +11,46 @@ from __future__ import annotations
 import json
 import re
 import threading
+from collections.abc import Callable, Mapping
 from datetime import datetime
-from typing import Any, Callable, Dict, Iterable, Literal, Mapping, Optional, Protocol, Sequence, Union
+from typing import (
+    Annotated,
+    Any,
+    Literal,
+    Protocol,
+)
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 import structlog
-
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
-from typing_extensions import Annotated, TypedDict
+from typing_extensions import TypedDict
 
-try:
-    from .prompts import (
-        ADJUSTED_DAY_SUPPORT_PROMPT,
-        ASSESSMENT_PROMPT,
-        ASSESSMENT_SUMMARY_PROMPT,
-        AVATAR_ACTION_PROMPT,
-        CRISIS_CONTEXT_PROMPT,
-        CRISIS_RESPONSE_PROMPT,
-        DAILY_SUPPORT_PROMPT,
-        EMOTION_LABEL_PROMPT,
-        EMOTION_TRANSLATION_PROMPT,
-        HOLIDAY_SUPPORT_PROMPT,
-        INTENT_CLASSIFIER_PROMPT,
-        RISK_ASSESSMENT_PROMPT,
-        WEEKEND_SUPPORT_PROMPT,
-    )
-    from .config import ALERT_API_TOKEN, ALERT_HTTP_TIMEOUT, ALERT_HTTP_URL, build_deepseek_models
-    from .data_layer import DataStore
-except ImportError:
-    from prompts import (
-        ADJUSTED_DAY_SUPPORT_PROMPT,
-        ASSESSMENT_PROMPT,
-        ASSESSMENT_SUMMARY_PROMPT,
-        AVATAR_ACTION_PROMPT,
-        CRISIS_CONTEXT_PROMPT,
-        CRISIS_RESPONSE_PROMPT,
-        DAILY_SUPPORT_PROMPT,
-        EMOTION_LABEL_PROMPT,
-        EMOTION_TRANSLATION_PROMPT,
-        HOLIDAY_SUPPORT_PROMPT,
-        INTENT_CLASSIFIER_PROMPT,
-        RISK_ASSESSMENT_PROMPT,
-        WEEKEND_SUPPORT_PROMPT,
-    )
-    from config import ALERT_API_TOKEN, ALERT_HTTP_TIMEOUT, ALERT_HTTP_URL, build_deepseek_models
-    from data_layer import DataStore
-
+from ..common.config import (
+    ALERT_API_TOKEN,
+    ALERT_HTTP_TIMEOUT,
+    ALERT_HTTP_URL,
+    build_deepseek_models,
+)
+from ..common.data_layer import DataStore
+from .prompts import (
+    ADJUSTED_DAY_SUPPORT_PROMPT,
+    ASSESSMENT_PROMPT,
+    ASSESSMENT_SUMMARY_PROMPT,
+    AVATAR_ACTION_PROMPT,
+    CRISIS_CONTEXT_PROMPT,
+    CRISIS_RESPONSE_PROMPT,
+    DAILY_SUPPORT_PROMPT,
+    EMOTION_LABEL_PROMPT,
+    EMOTION_TRANSLATION_PROMPT,
+    HOLIDAY_SUPPORT_PROMPT,
+    INTENT_CLASSIFIER_PROMPT,
+    RISK_ASSESSMENT_PROMPT,
+    WEEKEND_SUPPORT_PROMPT,
+)
 
 logger = structlog.get_logger("xinqing.graph")
 
@@ -83,30 +73,30 @@ class AppState(TypedDict, total=False):
     query: str
     user_id: str
     conversation_id: str
-    user_profile: Dict[str, Any]
+    user_profile: dict[str, Any]
     data_error: str
     conversation_history: str
     current_time: str
     intent: str
-    holiday_info: Dict[str, Any]
+    holiday_info: dict[str, Any]
     emotion: str
-    retrieval_context: Dict[str, str]
-    assessment: Dict[str, Any]
-    risk_assessment: Dict[str, Any]
+    retrieval_context: dict[str, str]
+    assessment: dict[str, Any]
+    risk_assessment: dict[str, Any]
     alert_sent: bool
     alert_error: str
     response: str
-    avatar_command: Dict[str, Any]
+    avatar_command: dict[str, Any]
     avatar_command_sent: bool
     avatar_command_error: str
     _conversation_lock_key: str
 
 
 ModelLike = Any
-RetrieverMap = Mapping[str, Optional[Retriever]]
-AlertSender = Callable[[Dict[str, Any]], Any]
+RetrieverMap = Mapping[str, Retriever | None]
+AlertSender = Callable[[dict[str, Any]], Any]
 HolidayFetcher = Callable[[str], Mapping[str, Any]]
-AvatarCommandSender = Callable[[Dict[str, Any]], Any]
+AvatarCommandSender = Callable[[dict[str, Any]], Any]
 
 
 # LangGraph may run multiple requests in the same Python process. Keep turns
@@ -138,7 +128,9 @@ def _render(template: str, values: Mapping[str, Any]) -> str:
 def _message_text(message: Any) -> str:
     content = getattr(message, "content", message)
     if isinstance(content, list):
-        return " ".join(str(item.get("text", item)) if isinstance(item, dict) else str(item) for item in content)
+        return " ".join(
+            str(item.get("text", item)) if isinstance(item, dict) else str(item) for item in content
+        )
     return str(content)
 
 
@@ -157,14 +149,20 @@ def _invoke(model: ModelLike, prompt: str, query: str) -> str:
     return _message_text(result).strip()
 
 
-def _invoke_structured(model: ModelLike, prompt: str, query: str) -> Optional[Dict[str, Any]]:
+def _invoke_structured(model: ModelLike, prompt: str, query: str) -> dict[str, Any] | None:
     if model is None:
         return None
     try:
-        structured_model = model.with_structured_output(dict) if hasattr(model, "with_structured_output") else model
-        result = structured_model.invoke(
-            [SystemMessage(content=prompt), HumanMessage(content=query)]
-        ) if hasattr(structured_model, "invoke") else structured_model(prompt, query)
+        structured_model = (
+            model.with_structured_output(dict)
+            if hasattr(model, "with_structured_output")
+            else model
+        )
+        result = (
+            structured_model.invoke([SystemMessage(content=prompt), HumanMessage(content=query)])
+            if hasattr(structured_model, "invoke")
+            else structured_model(prompt, query)
+        )
         if isinstance(result, Mapping):
             return dict(result)
         text = _message_text(result)
@@ -174,7 +172,7 @@ def _invoke_structured(model: ModelLike, prompt: str, query: str) -> Optional[Di
         return None
 
 
-def _retrieve(retriever: Optional[Retriever], query: str, max_chars: int = 8000) -> str:
+def _retrieve(retriever: Retriever | None, query: str, max_chars: int = 8000) -> str:
     if retriever is None:
         return ""
     try:
@@ -194,7 +192,7 @@ def _post_json(
     url: str,
     payload: Mapping[str, Any],
     timeout: float = 5.0,
-    headers: Optional[Mapping[str, str]] = None,
+    headers: Mapping[str, str] | None = None,
 ) -> Any:
     """Send one JSON command to the avatar/data-processing service."""
 
@@ -210,13 +208,22 @@ def _post_json(
         return json.loads(body) if body else None
 
 
-def _parse_avatar_command(raw: str, risk_assessment: Mapping[str, Any]) -> Dict[str, Any]:
+def _parse_avatar_command(raw: str, risk_assessment: Mapping[str, Any]) -> dict[str, Any]:
     """Parse and validate the LLM action output against the engine whitelist."""
 
-    allowed_actions = {"idle", "greet", "listen", "comfort", "think", "encourage", "alert", "goodbye"}
+    allowed_actions = {
+        "idle",
+        "greet",
+        "listen",
+        "comfort",
+        "think",
+        "encourage",
+        "alert",
+        "goodbye",
+    }
     allowed_expressions = {"neutral", "gentle_smile", "concerned", "calm", "serious"}
     allowed_gestures = {"none", "nod", "wave", "open_hands", "hand_on_heart", "point"}
-    command: Dict[str, Any] = {}
+    command: dict[str, Any] = {}
     try:
         match = re.search(r"\{.*\}", raw or "", re.DOTALL)
         if match:
@@ -238,9 +245,17 @@ def _parse_avatar_command(raw: str, risk_assessment: Mapping[str, Any]) -> Dict[
         "intensity": 0.45 if high_risk else 0.3,
         "duration_ms": 1600 if high_risk else 1200,
     }
-    action = command.get("action") if command.get("action") in allowed_actions else default["action"]
-    expression = command.get("expression") if command.get("expression") in allowed_expressions else default["expression"]
-    gesture = command.get("gesture") if command.get("gesture") in allowed_gestures else default["gesture"]
+    action = (
+        command.get("action") if command.get("action") in allowed_actions else default["action"]
+    )
+    expression = (
+        command.get("expression")
+        if command.get("expression") in allowed_expressions
+        else default["expression"]
+    )
+    gesture = (
+        command.get("gesture") if command.get("gesture") in allowed_gestures else default["gesture"]
+    )
     if high_risk and expression in {"gentle_smile", "neutral"}:
         expression = "concerned"
     if high_risk and gesture == "wave":
@@ -248,11 +263,11 @@ def _parse_avatar_command(raw: str, risk_assessment: Mapping[str, Any]) -> Dict[
     try:
         intensity = min(1.0, max(0.0, float(command.get("intensity", default["intensity"]))))
     except (TypeError, ValueError):
-        intensity = default["intensity"]
+        intensity = float(default["intensity"])
     try:
         duration_ms = min(10000, max(500, int(command.get("duration_ms", default["duration_ms"]))))
     except (TypeError, ValueError):
-        duration_ms = default["duration_ms"]
+        duration_ms = int(default["duration_ms"])
     return {
         "version": 1,
         "action": action,
@@ -273,7 +288,7 @@ def _keyword_intent(query: str) -> str:
     return "daily_support"
 
 
-def _fallback_assessment(query: str) -> Dict[str, Any]:
+def _fallback_assessment(query: str) -> dict[str, Any]:
     crisis = any(word in query for word in ("自杀", "自残", "轻生", "不想活", "结束生命"))
     anxious = any(word in query for word in ("焦虑", "紧张", "担心", "压力大"))
     depressed = any(word in query for word in ("抑郁", "绝望", "无意义", "撑不下去"))
@@ -293,11 +308,13 @@ def _fallback_assessment(query: str) -> Dict[str, Any]:
     }
 
 
-def _default_holiday(now: datetime) -> Dict[str, Any]:
+def _default_holiday(now: datetime) -> dict[str, Any]:
     weekday = now.weekday()
     return {
         "date": now.strftime("%Y-%m-%d"),
-        "weekday_name": ("星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日")[weekday],
+        "weekday_name": ("星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日")[
+            weekday
+        ],
         "is_weekend": weekday >= 5,
         "is_holiday": False,
         "is_adjusted": False,
@@ -317,14 +334,14 @@ def build_graph(
     risk_assessment_model: ModelLike = None,
     crisis_response_model: ModelLike = None,
     avatar_action_model: ModelLike = None,
-    retrievers: Optional[RetrieverMap] = None,
-    holiday_fetcher: Optional[HolidayFetcher] = None,
-    alert_sender: Optional[AlertSender] = None,
-    avatar_command_sender: Optional[AvatarCommandSender] = None,
-    avatar_http_url: Optional[str] = None,
-    alert_http_url: Optional[str] = None,
-    data_store: Optional[DataStore] = None,
-    checkpointer: Optional[BaseCheckpointSaver] = None,
+    retrievers: RetrieverMap | None = None,
+    holiday_fetcher: HolidayFetcher | None = None,
+    alert_sender: AlertSender | None = None,
+    avatar_command_sender: AvatarCommandSender | None = None,
+    avatar_http_url: str | None = None,
+    alert_http_url: str | None = None,
+    data_store: DataStore | None = None,
+    checkpointer: BaseCheckpointSaver | None = None,
 ):
     """Build and compile the workflow.
 
@@ -337,13 +354,17 @@ def build_graph(
     # explicitly injected. Callers can still override any individual node.
     deepseek_models = build_deepseek_models()
     intent_model = intent_model or deepseek_models.get("intent_model")
-    emotion_translation_model = emotion_translation_model or deepseek_models.get("emotion_translation_model")
+    emotion_translation_model = emotion_translation_model or deepseek_models.get(
+        "emotion_translation_model"
+    )
     emotion_label_model = emotion_label_model or deepseek_models.get("emotion_label_model")
     assessment_model = assessment_model or deepseek_models.get("assessment_model")
     crisis_context_model = crisis_context_model or deepseek_models.get("crisis_context_model")
     risk_assessment_model = risk_assessment_model or deepseek_models.get("risk_assessment_model")
     response_model = response_model or deepseek_models.get("response_model")
-    assessment_summary_model = assessment_summary_model or deepseek_models.get("assessment_summary_model")
+    assessment_summary_model = assessment_summary_model or deepseek_models.get(
+        "assessment_summary_model"
+    )
     crisis_response_model = crisis_response_model or deepseek_models.get("crisis_response_model")
     avatar_action_model = avatar_action_model or deepseek_models.get("avatar_action_model")
 
@@ -352,7 +373,7 @@ def build_graph(
     data_store = data_store or DataStore()
     workflow = StateGraph(AppState)
 
-    def prepare(state: AppState) -> Dict[str, Any]:
+    def prepare(state: AppState) -> dict[str, Any]:
         now = datetime.now(ZoneInfo("Asia/Shanghai"))
         user_id = state.get("user_id", "anonymous")
         fallback_conversation_id = str(state.get("conversation_id") or f"{user_id}-default")
@@ -368,11 +389,12 @@ def build_graph(
             "user_profile": {"user_id": user_id, "preferred_name": "", "preferences": {}},
         }
         try:
-            result["conversation_id"] = data_store.ensure_conversation(
+            conversation_id = data_store.ensure_conversation(
                 user_id, fallback_conversation_id, state.get("query", "")[:40]
             )
+            result["conversation_id"] = conversation_id
             result["user_profile"] = data_store.user_context(user_id)
-            stored_messages = data_store.list_messages(user_id, result["conversation_id"], limit=24)
+            stored_messages = data_store.list_messages(user_id, conversation_id, limit=24)
             history_lines = [f"{item['role']}: {item['content']}" for item in stored_messages]
             history_lines.append(f"user: {state.get('query', '')}")
             result["conversation_history"] = "\n".join(history_lines)
@@ -382,7 +404,7 @@ def build_graph(
             result["data_error"] = str(exc)
         return result
 
-    def classify_intent(state: AppState) -> Dict[str, Any]:
+    def classify_intent(state: AppState) -> dict[str, Any]:
         query = state.get("query", "")
         prompt = _render(INTENT_CLASSIFIER_PROMPT, {"query": query})
         raw = _invoke(intent_model, prompt, query)
@@ -397,7 +419,7 @@ def build_graph(
             intent = _keyword_intent(query)
         return {"intent": intent}
 
-    def daily_context(state: AppState) -> Dict[str, Any]:
+    def daily_context(state: AppState) -> dict[str, Any]:
         now = datetime.now(ZoneInfo("Asia/Shanghai"))
         info = dict(_default_holiday(now))
         if holiday_fetcher is not None:
@@ -408,29 +430,37 @@ def build_graph(
                 info["error"] = str(exc)
         return {"holiday_info": info}
 
-    def daily_emotion(state: AppState) -> Dict[str, Any]:
+    def daily_emotion(state: AppState) -> dict[str, Any]:
         query = state.get("query", "")
-        translated = _invoke(
-            emotion_translation_model,
-            _render(EMOTION_TRANSLATION_PROMPT, {"query": query}),
-            query,
-        ) or query
+        translated = (
+            _invoke(
+                emotion_translation_model,
+                _render(EMOTION_TRANSLATION_PROMPT, {"query": query}),
+                query,
+            )
+            or query
+        )
         retrieved = _retrieve(retrievers.get("emotion_support"), translated)
         anxiety_context = _retrieve(retrievers.get("anxiety_scale"), query)
         combined_context = "\n\n".join(
-            part for part in (
+            part
+            for part in (
                 "[情绪支持知识库]\n" + retrieved if retrieved else "",
                 "[焦虑量表知识库]\n" + anxiety_context if anxiety_context else "",
-            ) if part
+            )
+            if part
         )
-        emotion = _invoke(
-            emotion_label_model,
-            _render(
-                EMOTION_LABEL_PROMPT,
-                {"query": query, "retrieval_context": combined_context},
-            ),
-            translated,
-        ) or "待配置情绪识别模型"
+        emotion = (
+            _invoke(
+                emotion_label_model,
+                _render(
+                    EMOTION_LABEL_PROMPT,
+                    {"query": query, "retrieval_context": combined_context},
+                ),
+                translated,
+            )
+            or "待配置情绪识别模型"
+        )
         return {
             "emotion": emotion,
             "retrieval_context": {
@@ -440,7 +470,7 @@ def build_graph(
             },
         }
 
-    def daily_response(state: AppState) -> Dict[str, Any]:
+    def daily_response(state: AppState) -> dict[str, Any]:
         info = state.get("holiday_info", {})
         if info.get("is_holiday"):
             template = HOLIDAY_SUPPORT_PROMPT
@@ -466,7 +496,10 @@ def build_graph(
         profile = state.get("user_profile", {})
         if profile.get("preferred_name") or profile.get("preferences"):
             prompt += "\n用户偏好（仅在有助于回应时参考，不要提及系统保存的信息）：" + json.dumps(
-                {"preferred_name": profile.get("preferred_name", ""), "preferences": profile.get("preferences", {})},
+                {
+                    "preferred_name": profile.get("preferred_name", ""),
+                    "preferences": profile.get("preferences", {}),
+                },
                 ensure_ascii=False,
             )
         response = _invoke(response_model, prompt, state.get("query", ""))
@@ -474,7 +507,7 @@ def build_graph(
             response = "我听见你现在的感受了。你可以先慢慢说说发生了什么，我们一起把眼前最困扰你的部分理清楚。"
         return {"response": response}
 
-    def assess_state(state: AppState) -> Dict[str, Any]:
+    def assess_state(state: AppState) -> dict[str, Any]:
         history = state.get("conversation_history") or _history(state)
         prompt = _render(ASSESSMENT_PROMPT, {"conversation_history": history})
         assessment = _invoke_structured(assessment_model, prompt, state.get("query", ""))
@@ -484,16 +517,21 @@ def build_graph(
             assessment["risk_level"] = "high" if assessment.get("risk_flag") else "low"
         return {"assessment": assessment}
 
-    def assessment_response(state: AppState) -> Dict[str, Any]:
+    def assessment_response(state: AppState) -> dict[str, Any]:
         assessment = state.get("assessment", {})
         prompt = _render(
             ASSESSMENT_SUMMARY_PROMPT,
-            {"assessment": json.dumps(assessment, ensure_ascii=False), "query": state.get("query", "")},
+            {
+                "assessment": json.dumps(assessment, ensure_ascii=False),
+                "query": state.get("query", ""),
+            },
         )
         history = state.get("conversation_history", "").strip()
         if history:
             prompt += "\n\n最近对话记录：\n" + history
-        response = _invoke(assessment_summary_model or response_model, prompt, state.get("query", ""))
+        response = _invoke(
+            assessment_summary_model or response_model, prompt, state.get("query", "")
+        )
         if not response:
             response = (
                 f"根据当前对话的初步整理，你的主要情绪可能是“{assessment.get('emotional_state', '其他')}”，"
@@ -501,15 +539,17 @@ def build_graph(
             )
         return {"response": response}
 
-    def crisis_context(state: AppState) -> Dict[str, Any]:
+    def crisis_context(state: AppState) -> dict[str, Any]:
         query = state.get("query", "")
         mental_health_context = _retrieve(retrievers.get("mental_health"), query)
         first_aid_context = _retrieve(retrievers.get("crisis_first_aid"), query)
         retrieved = "\n\n".join(
-            part for part in (
+            part
+            for part in (
                 "[精神健康诊疗参考]\n" + mental_health_context if mental_health_context else "",
                 "[心理急救手册]\n" + first_aid_context if first_aid_context else "",
-            ) if part
+            )
+            if part
         )
         prompt = _render(
             CRISIS_CONTEXT_PROMPT,
@@ -529,14 +569,19 @@ def build_graph(
             }
         }
 
-    def crisis_assessment(state: AppState) -> Dict[str, Any]:
+    def crisis_assessment(state: AppState) -> dict[str, Any]:
         retrieval_context = state.get("retrieval_context", {})
         context = "\n\n".join(
-            part for part in (
-                retrieval_context.get("crisis_combined", retrieval_context.get("mental_health", "")),
+            part
+            for part in (
+                retrieval_context.get(
+                    "crisis_combined", retrieval_context.get("mental_health", "")
+                ),
                 "[危机知识分析]\n" + retrieval_context.get("crisis_analysis", "")
-                if retrieval_context.get("crisis_analysis") else "",
-            ) if part
+                if retrieval_context.get("crisis_analysis")
+                else "",
+            )
+            if part
         )
         prompt = _render(
             RISK_ASSESSMENT_PROMPT,
@@ -551,7 +596,7 @@ def build_graph(
             assessment = _fallback_assessment(state.get("query", ""))
         return {"risk_assessment": assessment}
 
-    def crisis_alert(state: AppState) -> Dict[str, Any]:
+    def crisis_alert(state: AppState) -> dict[str, Any]:
         assessment = state.get("risk_assessment", {})
         should_alert = bool(
             assessment.get("risk_flag")
@@ -593,7 +638,7 @@ def build_graph(
             )
             return {"alert_sent": False, "alert_error": str(exc)}
 
-    def crisis_response(state: AppState) -> Dict[str, Any]:
+    def crisis_response(state: AppState) -> dict[str, Any]:
         assessment = state.get("risk_assessment", {})
         prompt = _render(
             CRISIS_RESPONSE_PROMPT,
@@ -616,7 +661,7 @@ def build_graph(
             )
         return {"response": response}
 
-    def avatar_action(state: AppState) -> Dict[str, Any]:
+    def avatar_action(state: AppState) -> dict[str, Any]:
         """Choose a safe, whitelisted avatar command from the final response."""
 
         assessment = state.get("risk_assessment") or state.get("assessment") or {}
@@ -632,7 +677,7 @@ def build_graph(
         raw = _invoke(avatar_action_model, prompt, state.get("response", ""))
         return {"avatar_command": _parse_avatar_command(raw, assessment)}
 
-    def avatar_dispatch(state: AppState) -> Dict[str, Any]:
+    def avatar_dispatch(state: AppState) -> dict[str, Any]:
         """Forward the command to an injected sender or an HTTP endpoint."""
 
         command = dict(state.get("avatar_command") or {})
@@ -653,7 +698,7 @@ def build_graph(
             logger.info("avatar_dispatch_failed", error=str(exc))
             return {"avatar_command_sent": False, "avatar_command_error": str(exc)}
 
-    def finalize(state: AppState) -> Dict[str, Any]:
+    def finalize(state: AppState) -> dict[str, Any]:
         user_id = state.get("user_id", "anonymous")
         conversation_id = state.get("conversation_id", "")
         try:
@@ -663,16 +708,31 @@ def build_graph(
                 conversation_id,
                 "assistant",
                 state.get("response", ""),
-                {"intent": state.get("intent", ""), "avatar_command": state.get("avatar_command", {})},
+                {
+                    "intent": state.get("intent", ""),
+                    "avatar_command": state.get("avatar_command", {}),
+                },
             )
             if state.get("assessment"):
-                data_store.save_assessment(user_id, "condition_judgement", state["assessment"], conversation_id)
+                data_store.save_assessment(
+                    user_id, "condition_judgement", state["assessment"], conversation_id
+                )
             if state.get("risk_assessment"):
-                data_store.save_assessment(user_id, "crisis", state["risk_assessment"], conversation_id)
+                data_store.save_assessment(
+                    user_id, "crisis", state["risk_assessment"], conversation_id
+                )
         except Exception as exc:
             # Conversation storage must not prevent a user from receiving support.
-            logger.warning("finalize_storage_failed", user_id=user_id, conversation_id=conversation_id, error=str(exc))
-            return {"messages": [AIMessage(content=state.get("response", ""))], "data_error": str(exc)}
+            logger.warning(
+                "finalize_storage_failed",
+                user_id=user_id,
+                conversation_id=conversation_id,
+                error=str(exc),
+            )
+            return {
+                "messages": [AIMessage(content=state.get("response", ""))],
+                "data_error": str(exc),
+            }
         finally:
             lock_key = state.get("_conversation_lock_key")
             if lock_key:
@@ -728,12 +788,12 @@ def build_graph(
 
 def invoke_graph(
     graph: Any,
-    query: Union[str, Mapping[str, Any]],
+    query: str | Mapping[str, Any],
     *,
-    user_id: Optional[str] = None,
-    thread_id: Optional[str] = None,
-    conversation_id: Optional[str] = None,
-    config: Optional[Dict[str, Any]] = None,
+    user_id: str | None = None,
+    thread_id: str | None = None,
+    conversation_id: str | None = None,
+    config: dict[str, Any] | None = None,
 ) -> AppState:
     """Convenience wrapper for a single chat turn.
 
@@ -750,8 +810,12 @@ def invoke_graph(
 
     if isinstance(query, Mapping):
         input_data = dict(query)
-        actual_query = input_data.get("query", input_data.get("user_input", input_data.get("message", "")))
-        input_user_id = input_data.get("user_id", input_data.get("userId", input_data.get("userID")))
+        actual_query = input_data.get(
+            "query", input_data.get("user_input", input_data.get("message", ""))
+        )
+        input_user_id = input_data.get(
+            "user_id", input_data.get("userId", input_data.get("userID"))
+        )
     else:
         actual_query = query
         input_user_id = None

@@ -8,26 +8,26 @@ from __future__ import annotations
 
 import json
 import os
-import secrets
 import re
-from datetime import datetime, timezone
+import secrets
+from collections.abc import Mapping
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any
 from uuid import uuid4
 
 import psycopg
-from psycopg.rows import dict_row
-from psycopg.errors import UniqueViolation
 from dotenv import load_dotenv
+from psycopg.errors import UniqueViolation
+from psycopg.rows import dict_row
 from werkzeug.security import check_password_hash, generate_password_hash
-
 
 load_dotenv(Path(__file__).with_name(".env"), override=False)
 DEFAULT_DB_URL = "postgresql://xinqing:xinqing@localhost:5432/xinqing"
 
 
 def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def validate_user_id(user_id: Any) -> str:
@@ -42,7 +42,7 @@ def validate_user_id(user_id: Any) -> str:
 class DataStore:
     """PostgreSQL repository for anonymous profiles, conversations, and TTS jobs."""
 
-    def __init__(self, db_url: Optional[str] = None) -> None:
+    def __init__(self, db_url: str | None = None) -> None:
         self.url = db_url or os.getenv("DATA_DB_URL", DEFAULT_DB_URL)
         self.init_db()
 
@@ -133,9 +133,13 @@ class DataStore:
                 );
                 """
             )
-            columns = {row["column_name"] for row in conn.execute(
-                "SELECT column_name FROM information_schema.columns WHERE table_name = %s", ("users",)
-            ).fetchall()}
+            columns = {
+                row["column_name"]
+                for row in conn.execute(
+                    "SELECT column_name FROM information_schema.columns WHERE table_name = %s",
+                    ("users",),
+                ).fetchall()
+            }
             for name, definition in {
                 "nickname": "TEXT NOT NULL DEFAULT ''",
                 "password_hash": "TEXT NOT NULL DEFAULT ''",
@@ -144,10 +148,12 @@ class DataStore:
             }.items():
                 if name not in columns:
                     conn.execute(f"ALTER TABLE users ADD COLUMN {name} {definition}")
-            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_nickname ON users(nickname) WHERE nickname <> ''")
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_nickname ON users(nickname) WHERE nickname <> ''"
+            )
 
     @staticmethod
-    def _row(row: dict[str, Any] | None) -> Optional[dict[str, Any]]:
+    def _row(row: dict[str, Any] | None) -> dict[str, Any] | None:
         if row is None:
             return None
         value = dict(row)
@@ -165,7 +171,9 @@ class DataStore:
         value.pop("password_hash", None)
         return value
 
-    def register_user(self, nickname: Any, password: Any, real_name: Any, emergency_contacts: Any) -> dict[str, Any]:
+    def register_user(
+        self, nickname: Any, password: Any, real_name: Any, emergency_contacts: Any
+    ) -> dict[str, Any]:
         nickname = str(nickname or "").strip()
         password = str(password or "")
         real_name = str(real_name or "").strip()
@@ -192,16 +200,32 @@ class DataStore:
             with self.connect() as conn:
                 conn.execute(
                     "INSERT INTO users(user_id,nickname,password_hash,real_name,emergency_contacts_json,display_name,created_at,updated_at,last_seen_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                    (user_id, nickname, generate_password_hash(password), real_name, json.dumps(contacts, ensure_ascii=False), nickname, now, now, now),
+                    (
+                        user_id,
+                        nickname,
+                        generate_password_hash(password),
+                        real_name,
+                        json.dumps(contacts, ensure_ascii=False),
+                        nickname,
+                        now,
+                        now,
+                        now,
+                    ),
                 )
         except UniqueViolation as exc:
             raise ValueError("昵称已被注册") from exc
         return self.public_user(user_id)
 
-    def authenticate_user(self, nickname: Any, password: Any) -> Optional[dict[str, Any]]:
+    def authenticate_user(self, nickname: Any, password: Any) -> dict[str, Any] | None:
         with self.connect() as conn:
-            row = conn.execute("SELECT * FROM users WHERE nickname=%s", (str(nickname or "").strip(),)).fetchone()
-        if not row or not row["password_hash"] or not check_password_hash(row["password_hash"], str(password or "")):
+            row = conn.execute(
+                "SELECT * FROM users WHERE nickname=%s", (str(nickname or "").strip(),)
+            ).fetchone()
+        if (
+            not row
+            or not row["password_hash"]
+            or not check_password_hash(row["password_hash"], str(password or ""))
+        ):
             return None
         return self.public_user(row["user_id"])
 
@@ -215,16 +239,22 @@ class DataStore:
         token = secrets.token_urlsafe(32)
         token_hash = generate_password_hash(token)
         now = utc_now()
-        expires = datetime.now(timezone.utc).replace(microsecond=0)
         from datetime import timedelta
-        expires = (expires + timedelta(days=days)).isoformat()
+
+        expires_dt = datetime.now(UTC).replace(microsecond=0) + timedelta(days=days)
+        expires = expires_dt.isoformat()
         with self.connect() as conn:
-            conn.execute("INSERT INTO auth_sessions(token_hash,user_id,created_at,expires_at) VALUES (%s,%s,%s,%s)", (token_hash, user_id, now, expires))
+            conn.execute(
+                "INSERT INTO auth_sessions(token_hash,user_id,created_at,expires_at) VALUES (%s,%s,%s,%s)",
+                (token_hash, user_id, now, expires),
+            )
         return token
 
-    def session_user(self, token: str) -> Optional[str]:
+    def session_user(self, token: str) -> str | None:
         with self.connect() as conn:
-            rows = conn.execute("SELECT token_hash,user_id,expires_at FROM auth_sessions").fetchall()
+            rows = conn.execute(
+                "SELECT token_hash,user_id,expires_at FROM auth_sessions"
+            ).fetchall()
         for row in rows:
             if check_password_hash(row["token_hash"], token):
                 if row["expires_at"] < utc_now():
@@ -237,7 +267,9 @@ class DataStore:
             rows = conn.execute("SELECT token_hash FROM auth_sessions").fetchall()
             for row in rows:
                 if check_password_hash(row["token_hash"], token):
-                    conn.execute("DELETE FROM auth_sessions WHERE token_hash=%s", (row["token_hash"],))
+                    conn.execute(
+                        "DELETE FROM auth_sessions WHERE token_hash=%s", (row["token_hash"],)
+                    )
                     break
 
     def ensure_user(self, user_id: Any) -> dict[str, Any]:
@@ -248,13 +280,23 @@ class DataStore:
                 "INSERT INTO users(user_id,created_at,updated_at,last_seen_at) VALUES (%s,%s,%s,%s) ON CONFLICT (user_id) DO NOTHING",
                 (user_id, now, now, now),
             )
-            conn.execute("UPDATE users SET last_seen_at=%s,updated_at=%s WHERE user_id=%s", (now, now, user_id))
-            return self._row(conn.execute("SELECT * FROM users WHERE user_id=%s", (user_id,)).fetchone()) or {}
+            conn.execute(
+                "UPDATE users SET last_seen_at=%s,updated_at=%s WHERE user_id=%s",
+                (now, now, user_id),
+            )
+            return (
+                self._row(
+                    conn.execute("SELECT * FROM users WHERE user_id=%s", (user_id,)).fetchone()
+                )
+                or {}
+            )
 
-    def get_user(self, user_id: Any) -> Optional[dict[str, Any]]:
+    def get_user(self, user_id: Any) -> dict[str, Any] | None:
         user_id = validate_user_id(user_id)
         with self.connect() as conn:
-            return self._row(conn.execute("SELECT * FROM users WHERE user_id=%s", (user_id,)).fetchone())
+            return self._row(
+                conn.execute("SELECT * FROM users WHERE user_id=%s", (user_id,)).fetchone()
+            )
 
     def update_user(self, user_id: Any, values: Mapping[str, Any]) -> dict[str, Any]:
         user_id = validate_user_id(user_id)
@@ -267,13 +309,20 @@ class DataStore:
             updates["profile_json"] = json.dumps(profile, ensure_ascii=False)
         if "tts_enabled" in updates:
             updates["tts_enabled"] = int(bool(updates["tts_enabled"]))
-        for key in {"display_name", "preferred_name", "avatar_model", "voice_profile"} & updates.keys():
+        for key in {
+            "display_name",
+            "preferred_name",
+            "avatar_model",
+            "voice_profile",
+        } & updates.keys():
             updates[key] = str(updates[key]).strip()[:120]
         if updates:
             updates["updated_at"] = utc_now()
             columns = ", ".join(f"{key}=%s" for key in updates)
             with self.connect() as conn:
-                conn.execute(f"UPDATE users SET {columns} WHERE user_id=%s", (*updates.values(), user_id))
+                conn.execute(
+                    f"UPDATE users SET {columns} WHERE user_id=%s", (*updates.values(), user_id)
+                )
         return self.get_user(user_id) or {}
 
     def user_context(self, user_id: Any) -> dict[str, Any]:
@@ -287,7 +336,9 @@ class DataStore:
             "preferences": user.get("profile_json") or {},
         }
 
-    def ensure_conversation(self, user_id: Any, conversation_id: Optional[str] = None, title: str = "") -> str:
+    def ensure_conversation(
+        self, user_id: Any, conversation_id: str | None = None, title: str = ""
+    ) -> str:
         user_id = validate_user_id(user_id)
         self.ensure_user(user_id)
         conversation_id = str(conversation_id or f"conv-{uuid4().hex}").strip()
@@ -299,20 +350,36 @@ class DataStore:
                 "INSERT INTO conversations(conversation_id,user_id,title,created_at,updated_at) VALUES (%s,%s,%s,%s,%s) ON CONFLICT (conversation_id) DO NOTHING",
                 (conversation_id, user_id, str(title).strip()[:120], now, now),
             )
-            row = conn.execute("SELECT user_id FROM conversations WHERE conversation_id=%s", (conversation_id,)).fetchone()
+            row = conn.execute(
+                "SELECT user_id FROM conversations WHERE conversation_id=%s", (conversation_id,)
+            ).fetchone()
             if row is None or row["user_id"] != user_id:
                 raise ValueError("conversation_id 不属于当前用户")
-            conn.execute("UPDATE conversations SET updated_at=%s WHERE conversation_id=%s", (now, conversation_id))
+            conn.execute(
+                "UPDATE conversations SET updated_at=%s WHERE conversation_id=%s",
+                (now, conversation_id),
+            )
         return conversation_id
 
     def list_conversations(self, user_id: Any, limit: int = 50) -> list[dict[str, Any]]:
         user_id = validate_user_id(user_id)
         with self.connect() as conn:
-            return [dict(row) for row in conn.execute(
-                "SELECT * FROM conversations WHERE user_id=%s ORDER BY updated_at DESC LIMIT %s", (user_id, max(1, min(limit, 200)))
-            ).fetchall()]
+            return [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT * FROM conversations WHERE user_id=%s ORDER BY updated_at DESC LIMIT %s",
+                    (user_id, max(1, min(limit, 200))),
+                ).fetchall()
+            ]
 
-    def add_message(self, user_id: Any, conversation_id: str, role: str, content: Any, metadata: Optional[Mapping[str, Any]] = None) -> dict[str, Any]:
+    def add_message(
+        self,
+        user_id: Any,
+        conversation_id: str,
+        role: str,
+        content: Any,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
         if role not in {"user", "assistant", "system"}:
             raise ValueError("role 无效")
         user_id = validate_user_id(user_id)
@@ -326,20 +393,46 @@ class DataStore:
         with self.connect() as conn:
             conn.execute(
                 "INSERT INTO messages(message_id,conversation_id,user_id,role,content,metadata_json,created_at) VALUES (%s,%s,%s,%s,%s,%s,%s)",
-                (message_id, conversation_id, user_id, role, text, json.dumps(dict(metadata or {}), ensure_ascii=False), now),
+                (
+                    message_id,
+                    conversation_id,
+                    user_id,
+                    role,
+                    text,
+                    json.dumps(dict(metadata or {}), ensure_ascii=False),
+                    now,
+                ),
             )
-            return self._row(conn.execute("SELECT * FROM messages WHERE message_id=%s", (message_id,)).fetchone()) or {}
+            return (
+                self._row(
+                    conn.execute(
+                        "SELECT * FROM messages WHERE message_id=%s", (message_id,)
+                    ).fetchone()
+                )
+                or {}
+            )
 
-    def list_messages(self, user_id: Any, conversation_id: str, limit: int = 100) -> list[dict[str, Any]]:
+    def list_messages(
+        self, user_id: Any, conversation_id: str, limit: int = 100
+    ) -> list[dict[str, Any]]:
         user_id = validate_user_id(user_id)
         self.ensure_conversation(user_id, conversation_id)
         with self.connect() as conn:
-            return [self._row(row) or {} for row in conn.execute(
-                "SELECT * FROM messages WHERE conversation_id=%s AND user_id=%s ORDER BY id DESC LIMIT %s",
-                (conversation_id, user_id, max(1, min(limit, 500))),
-            ).fetchall()][::-1]
+            return [
+                self._row(row) or {}
+                for row in conn.execute(
+                    "SELECT * FROM messages WHERE conversation_id=%s AND user_id=%s ORDER BY id DESC LIMIT %s",
+                    (conversation_id, user_id, max(1, min(limit, 500))),
+                ).fetchall()
+            ][::-1]
 
-    def save_assessment(self, user_id: Any, assessment_type: str, payload: Mapping[str, Any], conversation_id: Optional[str] = None) -> dict[str, Any]:
+    def save_assessment(
+        self,
+        user_id: Any,
+        assessment_type: str,
+        payload: Mapping[str, Any],
+        conversation_id: str | None = None,
+    ) -> dict[str, Any]:
         user_id = validate_user_id(user_id)
         if conversation_id:
             conversation_id = self.ensure_conversation(user_id, conversation_id)
@@ -349,18 +442,40 @@ class DataStore:
         with self.connect() as conn:
             conn.execute(
                 "INSERT INTO assessments(assessment_id,user_id,conversation_id,assessment_type,risk_level,summary,payload_json,created_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
-                (assessment_id, user_id, conversation_id, assessment_type, risk, summary, json.dumps(dict(payload), ensure_ascii=False), now),
+                (
+                    assessment_id,
+                    user_id,
+                    conversation_id,
+                    assessment_type,
+                    risk,
+                    summary,
+                    json.dumps(dict(payload), ensure_ascii=False),
+                    now,
+                ),
             )
-            return self._row(conn.execute("SELECT * FROM assessments WHERE assessment_id=%s", (assessment_id,)).fetchone()) or {}
+            return (
+                self._row(
+                    conn.execute(
+                        "SELECT * FROM assessments WHERE assessment_id=%s", (assessment_id,)
+                    ).fetchone()
+                )
+                or {}
+            )
 
     def list_assessments(self, user_id: Any, limit: int = 30) -> list[dict[str, Any]]:
         user_id = validate_user_id(user_id)
         with self.connect() as conn:
-            return [self._row(row) or {} for row in conn.execute(
-                "SELECT * FROM assessments WHERE user_id=%s ORDER BY created_at DESC LIMIT %s", (user_id, max(1, min(limit, 200)))
-            ).fetchall()]
+            return [
+                self._row(row) or {}
+                for row in conn.execute(
+                    "SELECT * FROM assessments WHERE user_id=%s ORDER BY created_at DESC LIMIT %s",
+                    (user_id, max(1, min(limit, 200))),
+                ).fetchall()
+            ]
 
-    def create_tts_job(self, user_id: Any, text: Any, conversation_id: Optional[str] = None, voice_profile: str = "") -> dict[str, Any]:
+    def create_tts_job(
+        self, user_id: Any, text: Any, conversation_id: str | None = None, voice_profile: str = ""
+    ) -> dict[str, Any]:
         user_id = validate_user_id(user_id)
         if conversation_id:
             conversation_id = self.ensure_conversation(user_id, conversation_id)
@@ -373,17 +488,39 @@ class DataStore:
         with self.connect() as conn:
             conn.execute(
                 "INSERT INTO tts_jobs(job_id,user_id,conversation_id,text,voice_profile,created_at,updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s)",
-                (job_id, user_id, conversation_id, text, str(voice_profile).strip()[:120], now, now),
+                (
+                    job_id,
+                    user_id,
+                    conversation_id,
+                    text,
+                    str(voice_profile).strip()[:120],
+                    now,
+                    now,
+                ),
             )
-            return dict(conn.execute("SELECT * FROM tts_jobs WHERE job_id=%s", (job_id,)).fetchone())
+            return dict(
+                conn.execute("SELECT * FROM tts_jobs WHERE job_id=%s", (job_id,)).fetchone()
+            )
 
-    def get_tts_job(self, user_id: Any, job_id: str) -> Optional[dict[str, Any]]:
+    def get_tts_job(self, user_id: Any, job_id: str) -> dict[str, Any] | None:
         with self.connect() as conn:
-            row = conn.execute("SELECT * FROM tts_jobs WHERE job_id=%s AND user_id=%s", (job_id, validate_user_id(user_id))).fetchone()
+            row = conn.execute(
+                "SELECT * FROM tts_jobs WHERE job_id=%s AND user_id=%s",
+                (job_id, validate_user_id(user_id)),
+            ).fetchone()
             return dict(row) if row else None
 
-    def update_tts_job(self, user_id: Any, job_id: str, status: str, error: str = "") -> Optional[dict[str, Any]]:
-        if status not in {"requested", "queued", "processing", "completed", "failed", "not_configured"}:
+    def update_tts_job(
+        self, user_id: Any, job_id: str, status: str, error: str = ""
+    ) -> dict[str, Any] | None:
+        if status not in {
+            "requested",
+            "queued",
+            "processing",
+            "completed",
+            "failed",
+            "not_configured",
+        }:
             raise ValueError("TTS 状态无效")
         with self.connect() as conn:
             conn.execute(
@@ -394,4 +531,9 @@ class DataStore:
 
     def delete_user(self, user_id: Any) -> bool:
         with self.connect() as conn:
-            return conn.execute("DELETE FROM users WHERE user_id=%s", (validate_user_id(user_id),)).rowcount == 1
+            return (
+                conn.execute(
+                    "DELETE FROM users WHERE user_id=%s", (validate_user_id(user_id),)
+                ).rowcount
+                == 1
+            )

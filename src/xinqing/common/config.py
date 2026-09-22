@@ -8,8 +8,7 @@ key to source control.
 from __future__ import annotations
 
 import os
-from typing import Any, Dict
-
+from typing import Any
 
 # The requested global key placeholder. You may fill it here for local
 # experiments; an environment variable takes precedence in deployment.
@@ -29,7 +28,7 @@ ALERT_HTTP_TIMEOUT = float(os.getenv("ALERT_HTTP_TIMEOUT", "10"))
 ALERT_API_TOKEN = os.getenv("ALERT_API_TOKEN", "")
 
 
-def build_deepseek_models() -> Dict[str, Any]:
+def build_deepseek_models() -> dict[str, Any]:
     """Create the DeepSeek models used by all workflow LLM nodes.
 
     The import is lazy so the rest of the package can still be inspected or
@@ -66,8 +65,8 @@ def build_deepseek_models() -> Dict[str, Any]:
         "assessment_model": make(0.2),
         "crisis_context_model": make(0.2),
         "risk_assessment_model": make(0.1),
-    "response_model": make(DEEPSEEK_TEMPERATURE),
-    "assessment_summary_model": make(DEEPSEEK_TEMPERATURE),
-    "crisis_response_model": make(0.2),
-    "avatar_action_model": make(0.0),
+        "response_model": make(DEEPSEEK_TEMPERATURE),
+        "assessment_summary_model": make(DEEPSEEK_TEMPERATURE),
+        "crisis_response_model": make(0.2),
+        "avatar_action_model": make(0.0),
     }

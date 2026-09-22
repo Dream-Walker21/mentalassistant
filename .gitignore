@@ -1,5 +1,6 @@
 # Python caches and local environments
 __pycache__/
+.mypy_cache/
 *.py[cod]
 .modelscope-venv/
 .venv/

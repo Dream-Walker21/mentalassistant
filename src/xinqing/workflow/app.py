@@ -6,15 +6,9 @@ construct the graph with real retrievers and alert/avatar endpoints.
 
 import structlog
 
-try:
-    from .graph import build_graph
-    from .ingest import load_retrievers
-    from .logging_config import setup_logging
-except ImportError:
-    from graph import build_graph
-    from ingest import load_retrievers
-    from logging_config import setup_logging
-
+from ..common.logging_config import setup_logging
+from .graph import build_graph
+from .ingest import load_retrievers
 
 setup_logging()
 logger = structlog.get_logger("xinqing.app")

@@ -8,8 +8,8 @@
 
 | 成员 | 职责 | 负责目录 |
 |---|---|---|
-| 蒋状钊 | ① 智能体工作流（LangGraph） | `src/xinqing/graph.py`、`prompts.py`、`ingest.py`、`config.py`、`app.py` |
-| 王力涵 | ② 多模态中间层 + 数据层 + 部署 | `src/xinqing/data_layer.py`、`data_service.py`、`alert.py`、`scripts/`、中间层（待建） |
+| 蒋状钊 | ① 智能体工作流（LangGraph） | `src/xinqing/workflow/`（graph.py、prompts.py、ingest.py、app.py）、`src/xinqing/common/config.py` |
+| 王力涵 | ② 多模态中间层 + 数据层 + 部署 | `src/xinqing/common/data_layer.py`、`src/xinqing/data_service/`（app.py、alert.py）、`src/xinqing/middleware/`（待建）、`scripts/` |
 | 袁群 | ③ Web 前端 | `web/`（正式前端待建，当前仅有 `web/live2d_demo/` 测试面板） |
 | 共同维护 | 接口契约、项目结构、文档 | `docs/API_CONTRACT.md`、`AGENTS.md`、`pyproject.toml`、`.env.example` |
 
@@ -21,31 +21,31 @@
 
 ```
 L2 服务入口
-  app.py ──→ graph.py
-    └──→ ingest.py
+  workflow/app.py ──→ workflow/graph.py
+    └──→ workflow/ingest.py
 
-  alert.py ──→ data_layer.py
-  data_service.py ──→ data_layer.py
-  中间层(待建) ──→ graph.py (invoke_graph)
+  data_service/app.py ──→ common/data_layer.py
+  data_service/alert.py ──→ common/data_layer.py
+  middleware/(待建) ──→ workflow/graph.py (invoke_graph)
 
 L1 核心逻辑
-  graph.py ──→ prompts.py
-    ──→ config.py
-    ──→ data_layer.py
-    ──→ ingest.py ──→ [chromadb, sentence-transformers, modelscope]
+  workflow/graph.py ──→ workflow/prompts.py
+    ──→ common/config.py
+    ──→ common/data_layer.py
+    ──→ workflow/ingest.py ──→ [chromadb, sentence-transformers, modelscope]
 
 L0 基础设施
-  config.py ──→ [环境变量, langchain_deepseek]
-  data_layer.py ──→ [sqlite3, werkzeug.security]
+  common/config.py ──→ [环境变量, langchain_deepseek]
+  common/data_layer.py ──→ [psycopg, werkzeug.security]
 ```
 
 ### 层次定义
 
 | 层 | 模块 | 改动风险 |
 |---|---|---|
-| L0 基础设施 | `config.py`、`data_layer.py` | **最高** — 所有上游模块都依赖 |
-| L1 核心逻辑 | `prompts.py`、`ingest.py`、`graph.py` | **高** — 工作流核心，接口变动影响中间层和前端 |
-| L2 服务入口 | `app.py`、`alert.py`、`data_service.py`、中间层 | **中** — 对外暴露 HTTP 接口 |
+| L0 基础设施 | `common/config.py`、`common/data_layer.py` | **最高** — 所有上游模块都依赖 |
+| L1 核心逻辑 | `workflow/prompts.py`、`workflow/ingest.py`、`workflow/graph.py` | **高** — 工作流核心，接口变动影响中间层和前端 |
+| L2 服务入口 | `workflow/app.py`、`data_service/app.py`、`data_service/alert.py`、`middleware/` | **中** — 对外暴露 HTTP 接口 |
 | L3 前端 | `web/` | **低** — 仅影响用户界面 |
 
 ---
@@ -56,12 +56,12 @@ L0 基础设施
 
 | 边界 | 定义位置 | 消费方 |
 |---|---|---|
-| `build_graph()` / `invoke_graph()` 签名 | `graph.py` | 中间层、`app.py` |
-| `DataStore` 公共方法 | `data_layer.py` | `graph.py`、`alert.py`、`data_service.py` |
-| `POST /alert` 接口 | `alert.py` | `graph.py`（危机路径调用） |
-| `/api/*` 数据接口 | `data_service.py` | 前端（待建） |
-| `POST /chat` 接口 | 中间层（待建） | 前端（待建） |
-| `POST /avatar/command` 接口 | 中间层（待建） | `graph.py`（工作流调用） |
+| `build_graph()` / `invoke_graph()` 签名 | `workflow/graph.py` | 中间层、`workflow/app.py` |
+| `DataStore` 公共方法 | `common/data_layer.py` | `workflow/graph.py`、`data_service/alert.py`、`data_service/app.py` |
+| `POST /alert` 接口 | `data_service/alert.py` | `workflow/graph.py`（危机路径调用） |
+| `/api/*` 数据接口 | `data_service/app.py` | 前端（待建） |
+| `POST /chat` 接口 | `middleware/`（待建） | 前端（待建） |
+| `POST /avatar/command` 接口 | `middleware/`（待建） | `workflow/graph.py`（工作流调用） |
 | `AvatarCommand` 数据模型 | `API_CONTRACT.md` §5 | 工作流、中间层、前端 |
 | `RiskAssessment` 数据模型 | `API_CONTRACT.md` §5 | 工作流、中间层、前端 |
 | 环境变量集合 | `.env.example` | 所有服务 |
@@ -284,7 +284,17 @@ L0 基础设施
 ### 测试
 - 测试目录：`tests/`，镜像 `src/xinqing/` 结构（如 `tests/xinqing/test_graph.py`）。
 - 改动 L0/L1 模块时必须同时写/更新对应测试。
-- 测试框架：pytest（待引入）。
+- 测试框架：pytest，配置在 `pyproject.toml` `[tool.pytest.ini_options]`（`testpaths=tests`、`pythonpath=src`）。
+- 跑测试：`uv run pytest`。
+
+### 代码质量（lint / 格式化 / 类型检查）
+- 工具配置集中在 `pyproject.toml`（`[tool.ruff]`/`[tool.mypy]`），`.editorconfig` 统一编辑器，`.pre-commit-config.yaml` 提交前钩子。
+- **提交前必跑**（或装 pre-commit 自动跑）：
+  - lint + 自动修：`uv run ruff check --fix src tests`
+  - 格式化：`uv run ruff format src tests`
+  - 类型检查：`uv run mypy src/xinqing`（宽松配置，`ignore_missing_imports=true`，后续逐步收紧）
+- dev 依赖：`uv sync --group dev` 装 ruff/mypy/pytest/pre-commit。
+- pre-commit 启用：`uv run pre-commit install`（每人本地执行一次）。
 
 ### 日志与异常处理
 - **统一用 structlog**：`logger = structlog.get_logger("xinqing.模块名")`。
@@ -314,14 +324,15 @@ L0 基础设施
 
 | 模块 | 状态 | 负责人 |
 |---|---|---|
-| 智能体工作流（graph/prompts/ingest/config/app） | ✅ 代码完成，待端到端验证 | 蒋状钊 |
-| 告警服务（alert.py） | ✅ 完成 | 王力涵 |
-| 数据层（data_layer.py） | ✅ 完成 | 王力涵 |
-| 数据 API（data_service.py） | ✅ 完成 | 王力涵 |
+| 智能体工作流（workflow/ + common/config.py） | ✅ 代码完成，待端到端验证 | 蒋状钊 |
+| 告警服务（data_service/alert.py） | ✅ 完成 | 王力涵 |
+| 数据层（common/data_layer.py） | ✅ 完成 | 王力涵 |
+| 数据 API（data_service/app.py） | ✅ 完成 | 王力涵 |
 | Live2D 测试面板（web/live2d_demo/） | ✅ 完成 | 蒋状钊 |
 | 部署脚本（scripts/） | ✅ 完成 | 王力涵 |
 | 接口契约文档 | ✅ 完成 | 共同 |
-| 多模态中间层 | ❌ 未开始 | 王力涵 |
+| 目录结构重构（按服务分包） | ✅ 完成 | 王力涵 |
+| 多模态中间层（middleware/） | ❌ 未开始 | 王力涵 |
 | 正式 Web 前端 | ❌ 未开始 | 袁群 |
 | 测试代码（tests/） | ❌ 未开始 | 共同 |
 | 知识库索引构建 | ❌ 未跑通 | 蒋状钊 |

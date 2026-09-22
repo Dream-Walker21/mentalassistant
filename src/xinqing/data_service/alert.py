@@ -13,33 +13,27 @@ import json
 import os
 import secrets
 import smtplib
-
-import structlog
-
-import psycopg
-from psycopg.rows import dict_row
-from psycopg.errors import UniqueViolation
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
+from datetime import UTC, datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from functools import wraps
 from pathlib import Path
-from datetime import datetime, timezone
-from typing import Any, Dict, Mapping, Sequence
+from typing import Any
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
+import psycopg
+import structlog
 from dotenv import load_dotenv
 from flask import Flask, jsonify, redirect, render_template_string, request, session, url_for
+from psycopg.errors import UniqueViolation
+from psycopg.rows import dict_row
 from werkzeug.security import check_password_hash, generate_password_hash
 
-try:
-    from .data_layer import DataStore
-    from .logging_config import setup_logging
-except ImportError:
-    from data_layer import DataStore
-    from logging_config import setup_logging
-
+from ..common.data_layer import DataStore
+from ..common.logging_config import setup_logging
 
 # Load deployment settings from the project-local file when this module is
 # started directly. Existing process environment variables remain authoritative.
@@ -64,7 +58,7 @@ ROLE_PERMISSIONS = {
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def _db() -> psycopg.Connection:
@@ -99,11 +93,20 @@ def init_db() -> None:
           updated_at TEXT NOT NULL
         );
         """)
-        row = conn.execute("SELECT id FROM admin_users WHERE username=%s", (DEFAULT_ADMIN_USERNAME,)).fetchone()
+        row = conn.execute(
+            "SELECT id FROM admin_users WHERE username=%s", (DEFAULT_ADMIN_USERNAME,)
+        ).fetchone()
         if row is None:
             conn.execute(
                 "INSERT INTO admin_users(username,password_hash,role,enabled,created_at,updated_at) VALUES (%s,%s,%s,%s,%s,%s)",
-                (DEFAULT_ADMIN_USERNAME, generate_password_hash(DEFAULT_ADMIN_PASSWORD), "admin", 1, _now(), _now()),
+                (
+                    DEFAULT_ADMIN_USERNAME,
+                    generate_password_hash(DEFAULT_ADMIN_PASSWORD),
+                    "admin",
+                    1,
+                    _now(),
+                    _now(),
+                ),
             )
 
 
@@ -111,24 +114,42 @@ def _save_alert(payload: Mapping[str, Any]) -> bool:
     risk = payload.get("risk_assessment") or {}
     received = _now()
     with _db() as conn:
-        cur = conn.execute("""
+        cur = conn.execute(
+            """
           INSERT INTO alerts
           (alert_id,user_id,received_at,source_timestamp,risk_level,urgency,stress_level,immediate_action,payload_json,updated_at)
           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
           ON CONFLICT (alert_id) DO NOTHING
-        """, (str(payload["alert_id"]), str(payload["user_id"]), received,
-          str(payload.get("timestamp", "")), str(risk.get("risk_level", "unknown")).lower(),
-          str(risk.get("urgency", "未知")), str(risk.get("stress_level", "未知")),
-          int(bool(risk.get("immediate_action_required") or risk.get("risk_flag"))),
-          json.dumps(dict(payload), ensure_ascii=False), received))
+        """,
+            (
+                str(payload["alert_id"]),
+                str(payload["user_id"]),
+                received,
+                str(payload.get("timestamp", "")),
+                str(risk.get("risk_level", "unknown")).lower(),
+                str(risk.get("urgency", "未知")),
+                str(risk.get("stress_level", "未知")),
+                int(bool(risk.get("immediate_action_required") or risk.get("risk_flag"))),
+                json.dumps(dict(payload), ensure_ascii=False),
+                received,
+            ),
+        )
         return cur.rowcount == 1
 
 
-def _record_email(alert_id: str, status: str, error: str | None = None, recipients: int = 0) -> None:
+def _record_email(
+    alert_id: str, status: str, error: str | None = None, recipients: int = 0
+) -> None:
     timestamp = _now()
     with _db() as conn:
-        conn.execute("UPDATE alerts SET email_status=%s,email_error=%s,updated_at=%s WHERE alert_id=%s", (status, error, timestamp, alert_id))
-        conn.execute("INSERT INTO email_deliveries(alert_id,attempted_at,status,recipients_count,error) VALUES (%s,%s,%s,%s,%s)", (alert_id, timestamp, status, recipients, error))
+        conn.execute(
+            "UPDATE alerts SET email_status=%s,email_error=%s,updated_at=%s WHERE alert_id=%s",
+            (status, error, timestamp, alert_id),
+        )
+        conn.execute(
+            "INSERT INTO email_deliveries(alert_id,attempted_at,status,recipients_count,error) VALUES (%s,%s,%s,%s,%s)",
+            (alert_id, timestamp, status, recipients, error),
+        )
 
 
 def _get_alert(alert_id: str):
@@ -150,7 +171,9 @@ def current_admin() -> dict[str, Any] | None:
     if not user_id:
         return None
     with _db() as conn:
-        row = conn.execute("SELECT * FROM admin_users WHERE id=%s AND enabled=1", (user_id,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM admin_users WHERE id=%s AND enabled=1", (user_id,)
+        ).fetchone()
     return dict(row) if row else None
 
 
@@ -166,7 +189,9 @@ def require_permission(permission: str = "view_alerts"):
             if ADMIN_TOKEN and value and secrets.compare_digest(value, ADMIN_TOKEN):
                 return view(*args, **kwargs)
             return redirect(url_for("admin_login", next=request.path))
+
         return wrapped
+
     return decorator
 
 
@@ -187,6 +212,7 @@ def require_admin(view):
         if ADMIN_TOKEN and value and secrets.compare_digest(value, ADMIN_TOKEN):
             return view(*args, **kwargs)
         return redirect(url_for("admin_login", next=request.path))
+
     return wrapped
 
 
@@ -237,7 +263,7 @@ def _lookup_sensitive_user(user_id: str) -> dict[str, Any] | None:
         return None
 
 
-def _attach_sensitive_user(payload: Mapping[str, Any]) -> Dict[str, Any]:
+def _attach_sensitive_user(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Attach contact details only for high-risk alerts."""
     enriched = dict(payload)
     # Never trust sensitive fields supplied by the graph or a caller.
@@ -250,7 +276,7 @@ def _attach_sensitive_user(payload: Mapping[str, Any]) -> Dict[str, Any]:
     return enriched
 
 
-def _normalize_payload(data: Mapping[str, Any]) -> Dict[str, Any]:
+def _normalize_payload(data: Mapping[str, Any]) -> dict[str, Any]:
     """Accept both the LangGraph wrapper and a raw alert object."""
 
     value = data.get("alert_data", data)
@@ -271,12 +297,12 @@ class AlertNotifier(ABC):
     """Delivery interface. Add another implementation without touching graph.py."""
 
     @abstractmethod
-    def send(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
+    def send(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         raise NotImplementedError
 
 
 class LogNotifier(AlertNotifier):
-    def send(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
+    def send(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         risk = payload.get("risk_assessment") or {}
         logger.warning(
             "crisis_alert_received",
@@ -297,7 +323,7 @@ class EmailNotifier(AlertNotifier):
         self.from_email = os.getenv("SMTP_FROM", self.username)
         self.recipients = _env_list("ALERT_RECIPIENTS")
 
-    def send(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
+    def send(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         if not self.username or not self.password:
             raise RuntimeError("邮件通道缺少 SMTP_USERNAME/SMTP_PASSWORD 配置")
 
@@ -316,7 +342,9 @@ class EmailNotifier(AlertNotifier):
         ]
         recipients = list(dict.fromkeys([*self.recipients, *contact_recipients]))
         if not recipients:
-            raise RuntimeError("邮件通道缺少 SMTP_USERNAME/SMTP_PASSWORD/ALERT_RECIPIENTS，且没有用户紧急联系人邮箱")
+            raise RuntimeError(
+                "邮件通道缺少 SMTP_USERNAME/SMTP_PASSWORD/ALERT_RECIPIENTS，且没有用户紧急联系人邮箱"
+            )
         query = html.escape(str(payload.get("query", ""))[:500])
         signals = risk.get("risk_signals") or []
         signal_html = "".join(f"<li>{html.escape(str(item))}</li>" for item in signals)
@@ -335,15 +363,15 @@ class EmailNotifier(AlertNotifier):
         body = f"""
         <html><body>
         <h2>{html.escape(subject)}</h2>
-        <p><b>告警 ID：</b>{html.escape(str(payload.get('alert_id', 'unknown')))}</p>
-        <p><b>用户 ID：</b>{html.escape(str(payload.get('user_id', 'anonymous')))}</p>
-        <p><b>时间：</b>{html.escape(str(payload.get('timestamp', 'unknown')))}</p>
+        <p><b>告警 ID：</b>{html.escape(str(payload.get("alert_id", "unknown")))}</p>
+        <p><b>用户 ID：</b>{html.escape(str(payload.get("user_id", "anonymous")))}</p>
+        <p><b>时间：</b>{html.escape(str(payload.get("timestamp", "unknown")))}</p>
         <p><b>风险等级：</b>{html.escape(risk_level)}</p>
-        <p><b>紧急程度：</b>{html.escape(str(risk.get('urgency', 'unknown')))}</p>
-        <p><b>压力等级：</b>{html.escape(str(risk.get('stress_level', 'unknown')))} / 5</p>
-        <p><b>风险信号：</b></p><ul>{signal_html or '<li>未提供</li>'}</ul>
+        <p><b>紧急程度：</b>{html.escape(str(risk.get("urgency", "unknown")))}</p>
+        <p><b>压力等级：</b>{html.escape(str(risk.get("stress_level", "unknown")))} / 5</p>
+        <p><b>风险信号：</b></p><ul>{signal_html or "<li>未提供</li>"}</ul>
         <p><b>输入摘要：</b></p>
-        <blockquote>{query or '未提供'}</blockquote>
+        <blockquote>{query or "未提供"}</blockquote>
         {private_html}
         <p>此邮件由心晴助手告警服务自动生成，请由具备资质的工作人员进行后续判断。</p>
         </body></html>
@@ -363,7 +391,7 @@ class WebhookNotifier(AlertNotifier):
     def __init__(self, url: str) -> None:
         self.url = url
 
-    def send(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
+    def send(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         body = json.dumps(dict(payload), ensure_ascii=False).encode("utf-8")
         req = Request(
             self.url,
@@ -396,7 +424,13 @@ notifier = create_notifier()
 
 @app.get("/health")
 def health() -> Any:
-    return jsonify({"status": "healthy", "service": "xin-qing-alert", "channel": os.getenv("ALERT_CHANNEL", "email")})
+    return jsonify(
+        {
+            "status": "healthy",
+            "service": "xin-qing-alert",
+            "channel": os.getenv("ALERT_CHANNEL", "email"),
+        }
+    )
 
 
 @app.post("/alert")
@@ -411,7 +445,14 @@ def receive_alert() -> Any:
         init_db()
         if not _save_alert(payload):
             row = _get_alert(str(payload["alert_id"]))
-            return jsonify({"status": "success", "alert_id": payload["alert_id"], "duplicate": True, "email_status": row["email_status"] if row else "unknown"})
+            return jsonify(
+                {
+                    "status": "success",
+                    "alert_id": payload["alert_id"],
+                    "duplicate": True,
+                    "email_status": row["email_status"] if row else "unknown",
+                }
+            )
         alert_id = str(payload["alert_id"])
         _record_email(alert_id, "sending")
         try:
@@ -420,7 +461,14 @@ def receive_alert() -> Any:
         except Exception as exc:
             logger.exception("alert_send_failed", alert_id=alert_id)
             _record_email(alert_id, "failed", error=str(exc))
-            return jsonify({"status": "error", "alert_id": alert_id, "error": "邮件发送失败", "detail": str(exc)}), 500
+            return jsonify(
+                {
+                    "status": "error",
+                    "alert_id": alert_id,
+                    "error": "邮件发送失败",
+                    "detail": str(exc),
+                }
+            ), 500
         return jsonify({"status": "success", "alert_id": alert_id, **result})
     except json.JSONDecodeError as exc:
         return jsonify({"status": "error", "error": f"alert_data 不是有效 JSON: {exc}"}), 400
@@ -433,21 +481,44 @@ def receive_alert() -> Any:
 
 BASE_STYLE = """<style>:root{--ink:#24343b;--muted:#718087;--accent:#0f766e;--soft:#e7f5f1;--line:#dce7e5}*{box-sizing:border-box}body{margin:0;font-family:system-ui,'Microsoft YaHei',sans-serif;background:linear-gradient(135deg,#eaf7f4,#f7faf9);color:var(--ink)}.top{background:#123f46;color:#fff;padding:18px 28px;display:flex;justify-content:space-between;align-items:center}.top a{color:#d5eeea;text-decoration:none;margin-left:16px}.wrap{max-width:1280px;margin:26px auto;padding:0 18px}.panel,.filters,.table{background:rgba(255,255,255,.9);border:1px solid var(--line);border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 12px 30px rgba(27,65,70,.07)}.filters{display:flex;gap:10px;flex-wrap:wrap}.filters input,.filters select{flex:1;min-width:150px}input,select,textarea,button{border:1px solid var(--line);border-radius:7px;padding:10px;font:inherit}button{background:var(--accent);color:white;border:0;cursor:pointer}button.secondary{background:var(--soft);color:var(--accent)}table{width:100%;border-collapse:collapse}th,td{padding:13px 10px;border-bottom:1px solid #edf2f1;text-align:left}.critical{color:#b42318;font-weight:700}.high{color:#c2410c;font-weight:700}.medium{color:#a16207}.badge{padding:4px 8px;border-radius:99px;background:var(--soft);font-size:12px}.actions a{color:var(--accent);text-decoration:none}.muted{color:var(--muted);font-size:13px}.auth{max-width:430px;margin:12vh auto}.auth h1{margin-top:0}.auth form{display:grid;gap:10px}.nav{display:flex;gap:12px;align-items:center}.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}@media(max-width:720px){.grid{grid-template-columns:1fr}.top{padding:16px}.table{overflow:auto}}
 </style>"""
-LOGIN_HTML = """<!doctype html><meta charset='utf-8'><title>心晴助手 · 管理后台</title>""" + BASE_STYLE + """<main class='auth panel'><h1>心晴助手</h1><p class='muted'>危机预警管理后台</p><form method='post'><input name='username' placeholder='用户名' autofocus required><input name='password' type='password' placeholder='密码' required><button>登录</button></form><p class='muted'>还没有账户？<a href='/admin/register'>注册工作人员账户</a></p>{% if error %}<p class='critical'>{{error}}</p>{% endif %}</main>"""
-REGISTER_HTML = """<!doctype html><meta charset='utf-8'><title>注册账户</title>""" + BASE_STYLE + """<main class='auth panel'><h1>注册账户</h1><p class='muted'>新账户默认只有查看权限，管理员可后续调整。</p><form method='post'><input name='username' placeholder='用户名（3-40位）' required><input name='password' type='password' placeholder='密码（至少8位）' required><input name='password2' type='password' placeholder='确认密码' required><button>提交注册</button></form><p><a href='/admin/login'>返回登录</a></p>{% if error %}<p class='critical'>{{error}}</p>{% endif %}</main>"""
-ADMIN_HTML = """<!doctype html><meta charset='utf-8'><title>危机预警管理</title>""" + BASE_STYLE + """<div class='top'><strong>心晴助手 · 危机预警管理</strong><nav class='nav'><span>{{admin['username']}} · {{admin['role']}}</span>{% if 'manage_users' in permissions %}<a href='/admin/users'>用户权限</a>{% endif %}<a href='/admin/logout'>退出</a></nav></div><div class='wrap'><form class='filters' method='get'><input name='user_id' value='{{user_id}}' placeholder='按用户 ID 搜索'><select name='risk'><option value=''>全部风险</option>{% for v in ['critical','high','medium','low','unknown'] %}<option value='{{v}}' {% if risk==v %}selected{% endif %}>{{v}}</option>{% endfor %}</select><select name='status'><option value=''>全部处理状态</option>{% for v in ['new','in_progress','contacted','closed'] %}<option value='{{v}}' {% if status==v %}selected{% endif %}>{{v}}</option>{% endfor %}</select><button>筛选</button></form><div class='table'><table><tr><th>时间</th><th>用户 ID</th><th>风险</th><th>紧急</th><th>邮件</th><th>处理状态</th><th>操作</th></tr>{% for row in rows %}<tr><td>{{row['received_at']}}</td><td>{{row['user_id']}}</td><td class='{{row['risk_level']}}'>{{row['risk_level']}}</td><td>{{'是' if row['immediate_action'] else '否'}}</td><td><span class='badge'>{{row['email_status']}}</span></td><td><span class='badge'>{{row['handling_status']}}</span></td><td class='actions'><a href='/admin/alert/{{row['alert_id']}}'>查看详情</a></td></tr>{% else %}<tr><td colspan='7'>暂无预警记录</td></tr>{% endfor %}</table></div></div>"""
+LOGIN_HTML = (
+    """<!doctype html><meta charset='utf-8'><title>心晴助手 · 管理后台</title>"""
+    + BASE_STYLE
+    + """<main class='auth panel'><h1>心晴助手</h1><p class='muted'>危机预警管理后台</p><form method='post'><input name='username' placeholder='用户名' autofocus required><input name='password' type='password' placeholder='密码' required><button>登录</button></form><p class='muted'>还没有账户？<a href='/admin/register'>注册工作人员账户</a></p>{% if error %}<p class='critical'>{{error}}</p>{% endif %}</main>"""
+)
+REGISTER_HTML = (
+    """<!doctype html><meta charset='utf-8'><title>注册账户</title>"""
+    + BASE_STYLE
+    + """<main class='auth panel'><h1>注册账户</h1><p class='muted'>新账户默认只有查看权限，管理员可后续调整。</p><form method='post'><input name='username' placeholder='用户名（3-40位）' required><input name='password' type='password' placeholder='密码（至少8位）' required><input name='password2' type='password' placeholder='确认密码' required><button>提交注册</button></form><p><a href='/admin/login'>返回登录</a></p>{% if error %}<p class='critical'>{{error}}</p>{% endif %}</main>"""
+)
+ADMIN_HTML = (
+    """<!doctype html><meta charset='utf-8'><title>危机预警管理</title>"""
+    + BASE_STYLE
+    + """<div class='top'><strong>心晴助手 · 危机预警管理</strong><nav class='nav'><span>{{admin['username']}} · {{admin['role']}}</span>{% if 'manage_users' in permissions %}<a href='/admin/users'>用户权限</a>{% endif %}<a href='/admin/logout'>退出</a></nav></div><div class='wrap'><form class='filters' method='get'><input name='user_id' value='{{user_id}}' placeholder='按用户 ID 搜索'><select name='risk'><option value=''>全部风险</option>{% for v in ['critical','high','medium','low','unknown'] %}<option value='{{v}}' {% if risk==v %}selected{% endif %}>{{v}}</option>{% endfor %}</select><select name='status'><option value=''>全部处理状态</option>{% for v in ['new','in_progress','contacted','closed'] %}<option value='{{v}}' {% if status==v %}selected{% endif %}>{{v}}</option>{% endfor %}</select><button>筛选</button></form><div class='table'><table><tr><th>时间</th><th>用户 ID</th><th>风险</th><th>紧急</th><th>邮件</th><th>处理状态</th><th>操作</th></tr>{% for row in rows %}<tr><td>{{row['received_at']}}</td><td>{{row['user_id']}}</td><td class='{{row['risk_level']}}'>{{row['risk_level']}}</td><td>{{'是' if row['immediate_action'] else '否'}}</td><td><span class='badge'>{{row['email_status']}}</span></td><td><span class='badge'>{{row['handling_status']}}</span></td><td class='actions'><a href='/admin/alert/{{row['alert_id']}}'>查看详情</a></td></tr>{% else %}<tr><td colspan='7'>暂无预警记录</td></tr>{% endfor %}</table></div></div>"""
+)
 DETAIL_HTML = """<!doctype html><meta charset='utf-8'><title>预警详情</title><style>body{font-family:system-ui,Microsoft YaHei;background:#f4f6f8;margin:0;color:#25313d}.top{background:#195b9d;color:#fff;padding:16px 24px}.wrap{max-width:960px;margin:22px auto;padding:0 16px}.panel{background:#fff;padding:20px;margin-bottom:14px;border-radius:10px;box-shadow:0 10px 26px rgba(37,49,61,.06)}dt{font-weight:bold;margin-top:10px}dd{margin:3px 0;white-space:pre-wrap;word-break:break-word}textarea{width:100%;min-height:80px;box-sizing:border-box}select,button,input{padding:9px;margin-top:8px}button{background:#195b9d;color:#fff;border:0;border-radius:4px}.metric-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:14px;margin:12px 0 4px}.metric{display:grid;place-items:center;gap:8px;padding:14px;border:1px solid #e6edf2;border-radius:12px;background:#fbfdff}.ring{--value:0;--color:#195b9d;width:104px;height:104px;border-radius:50%;display:grid;place-items:center;background:conic-gradient(var(--color) calc(var(--value)*1%),#e9eef2 0);position:relative}.ring::after{content:"";position:absolute;inset:10px;border-radius:50%;background:#fff}.ring strong{position:relative;z-index:1;font-size:20px;color:#25313d;text-align:center}.metric span{font-size:13px;color:#667680}.metric em{font-style:normal;font-size:12px;color:#8a98a3}.critical{color:#b42318}.high{color:#c2410c}.medium{color:#a16207}</style><div class='top'><a href='/admin' style='color:#fff'>← 返回列表</a></div><div class='wrap'><div class='panel'><h2>预警详情</h2><dl><dt>预警 ID</dt><dd>{{row['alert_id']}}</dd><dt>用户 ID</dt><dd>{{row['user_id']}}</dd><dt>接收时间</dt><dd>{{row['received_at']}}</dd><dt>风险等级</dt><dd class='{{row['risk_level']}}'>{{row['risk_level']}}</dd><dt>邮件状态</dt><dd>{{row['email_status']}}{% if row['email_error'] %}：{{row['email_error']}}{% endif %}</dd></dl></div><div class='panel'><h3>风险指标</h3><div class='metric-grid'>{% for item in metrics %}<div class='metric'><div class='ring' style='--value:{{item['value']}};--color:{{item['color']}}'><strong>{{item['text']}}</strong></div><span>{{item['label']}}</span><em>{{item['value']}}%</em></div>{% else %}<p>暂无可视化指标</p>{% endfor %}</div></div><div class='panel'><form method='post'><label>处理状态</label><br><select name='handling_status'>{% for v in ['new','in_progress','contacted','closed'] %}<option value='{{v}}' {% if row['handling_status']==v %}selected{% endif %}>{{v}}</option>{% endfor %}</select><br><input name='handled_by' value='{{row['handled_by'] or ""}}' placeholder='处理人'><br><textarea name='handling_note' placeholder='处理备注'>{{row['handling_note'] or ''}}</textarea><br><button>保存处理记录</button></form></div><div class='panel'><h3>预警数据</h3><pre>{{payload}}</pre></div></div>"""
 
 
 def _admin_rows():
     init_db()
-    risk, status, user_id = request.args.get("risk", "").strip().lower(), request.args.get("status", "").strip().lower(), request.args.get("user_id", "").strip()
+    risk, status, user_id = (
+        request.args.get("risk", "").strip().lower(),
+        request.args.get("status", "").strip().lower(),
+        request.args.get("user_id", "").strip(),
+    )
     query, values = "SELECT * FROM alerts WHERE 1=1", []
-    if risk: query += " AND risk_level=%s"; values.append(risk)
-    if status: query += " AND handling_status=%s"; values.append(status)
-    if user_id: query += " AND user_id LIKE %s"; values.append(f"%{user_id}%")
+    if risk:
+        query += " AND risk_level=%s"
+        values.append(risk)
+    if status:
+        query += " AND handling_status=%s"
+        values.append(status)
+    if user_id:
+        query += " AND user_id LIKE %s"
+        values.append(f"%{user_id}%")
     query += " ORDER BY CASE risk_level WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 ELSE 4 END, received_at DESC LIMIT 200"
-    with _db() as conn: return conn.execute(query, values).fetchall()
+    with _db() as conn:
+        return conn.execute(query, values).fetchall()
 
 
 def _number(value: Any) -> float | None:
@@ -472,20 +543,24 @@ def _risk_metrics(payload: Mapping[str, Any], row: dict[str, Any]) -> list[dict[
     level = str(row["risk_level"] or risk.get("risk_level", "unknown")).lower()
     level_map = {"low": 25, "medium": 50, "high": 75, "critical": 100}
     color_map = {"low": "#0f766e", "medium": "#ca8a04", "high": "#ea580c", "critical": "#b42318"}
-    metrics: list[dict[str, Any]] = [{
-        "label": "风险等级",
-        "value": level_map.get(level, 0),
-        "text": level,
-        "color": color_map.get(level, "#64748b"),
-    }]
+    metrics: list[dict[str, Any]] = [
+        {
+            "label": "风险等级",
+            "value": level_map.get(level, 0),
+            "text": level,
+            "color": color_map.get(level, "#64748b"),
+        }
+    ]
     stress = _number(risk.get("stress_level", row["stress_level"]))
     if stress is not None:
-        metrics.append({
-            "label": "压力等级",
-            "value": _percent(stress, 5),
-            "text": f"{stress:g}/5",
-            "color": "#2563eb" if stress < 3 else "#ea580c" if stress < 5 else "#b42318",
-        })
+        metrics.append(
+            {
+                "label": "压力等级",
+                "value": _percent(stress, 5),
+                "text": f"{stress:g}/5",
+                "color": "#2563eb" if stress < 3 else "#ea580c" if stress < 5 else "#b42318",
+            }
+        )
     for key, label in (
         ("confidence_level", "置信度"),
         ("confidence", "置信度"),
@@ -496,12 +571,14 @@ def _risk_metrics(payload: Mapping[str, Any], row: dict[str, Any]) -> list[dict[
         if value is None:
             continue
         maximum = 1 if value <= 1 else 100
-        metrics.append({
-            "label": label,
-            "value": _percent(value, maximum),
-            "text": f"{_percent(value, maximum)}%",
-            "color": "#7c3aed" if label == "置信度" else "#dc2626",
-        })
+        metrics.append(
+            {
+                "label": label,
+                "value": _percent(value, maximum),
+                "text": f"{_percent(value, maximum)}%",
+                "color": "#7c3aed" if label == "置信度" else "#dc2626",
+            }
+        )
         if label == "置信度":
             break
     if row["immediate_action"]:
@@ -516,7 +593,9 @@ def admin_login():
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
         with _db() as conn:
-            user = conn.execute("SELECT * FROM admin_users WHERE username=%s AND enabled=1", (username,)).fetchone()
+            user = conn.execute(
+                "SELECT * FROM admin_users WHERE username=%s AND enabled=1", (username,)
+            ).fetchone()
         if user and check_password_hash(user["password_hash"], password):
             session.clear()
             session["admin_user_id"] = user["id"]
@@ -536,7 +615,11 @@ def admin_register():
     if request.method == "POST":
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
-        if len(username) < 3 or len(username) > 40 or not username.replace("_", "").replace("-", "").isalnum():
+        if (
+            len(username) < 3
+            or len(username) > 40
+            or not username.replace("_", "").replace("-", "").isalnum()
+        ):
             error = "用户名需为 3-40 位字母、数字、下划线或短横线。"
         elif len(password) < 8:
             error = "密码至少需要 8 位。"
@@ -546,7 +629,10 @@ def admin_register():
             try:
                 with _db() as conn:
                     now = _now()
-                    conn.execute("INSERT INTO admin_users(username,password_hash,role,enabled,created_at,updated_at) VALUES (%s,%s,%s,%s,%s,%s)", (username, generate_password_hash(password), "viewer", 1, now, now))
+                    conn.execute(
+                        "INSERT INTO admin_users(username,password_hash,role,enabled,created_at,updated_at) VALUES (%s,%s,%s,%s,%s,%s)",
+                        (username, generate_password_hash(password), "viewer", 1, now, now),
+                    )
                 return redirect(url_for("admin_login"))
             except UniqueViolation:
                 error = "用户名已存在。"
@@ -563,21 +649,40 @@ def admin_logout():
 @require_permission("view_alerts")
 def admin_index():
     admin = current_admin() or {"username": "token-admin", "role": "admin"}
-    return render_template_string(ADMIN_HTML, rows=_admin_rows(), admin=admin, permissions=ROLE_PERMISSIONS.get(admin.get("role"), ROLE_PERMISSIONS["admin"]), risk=request.args.get("risk", ""), status=request.args.get("status", ""), user_id=request.args.get("user_id", ""))
+    return render_template_string(
+        ADMIN_HTML,
+        rows=_admin_rows(),
+        admin=admin,
+        permissions=ROLE_PERMISSIONS.get(admin.get("role"), ROLE_PERMISSIONS["admin"]),
+        risk=request.args.get("risk", ""),
+        status=request.args.get("status", ""),
+        user_id=request.args.get("user_id", ""),
+    )
 
 
 @app.route("/admin/alert/<alert_id>", methods=["GET", "POST"])
 @require_permission("view_alerts")
 def admin_detail(alert_id: str):
     row = _get_alert(alert_id)
-    if row is None: return "未找到预警", 404
+    if row is None:
+        return "未找到预警", 404
     if request.method == "POST":
         if not has_permission("manage_alerts"):
             return "没有处理告警的权限", 403
         status = request.form.get("handling_status", "new")
-        if status not in {"new", "in_progress", "contacted", "closed"}: return "处理状态无效", 400
+        if status not in {"new", "in_progress", "contacted", "closed"}:
+            return "处理状态无效", 400
         with _db() as conn:
-            conn.execute("UPDATE alerts SET handling_status=%s,handled_by=%s,handling_note=%s,updated_at=%s WHERE alert_id=%s", (status, request.form.get("handled_by", "").strip(), request.form.get("handling_note", "").strip(), _now(), alert_id))
+            conn.execute(
+                "UPDATE alerts SET handling_status=%s,handled_by=%s,handling_note=%s,updated_at=%s WHERE alert_id=%s",
+                (
+                    status,
+                    request.form.get("handled_by", "").strip(),
+                    request.form.get("handling_note", "").strip(),
+                    _now(),
+                    alert_id,
+                ),
+            )
         row = _get_alert(alert_id)
     payload = json.loads(row["payload_json"])
     return render_template_string(
@@ -594,7 +699,11 @@ def admin_api_alerts():
     return jsonify([dict(row) for row in _admin_rows()])
 
 
-USERS_HTML = """<!doctype html><meta charset='utf-8'><title>用户权限</title>""" + BASE_STYLE + """<div class='top'><strong>用户权限管理</strong><nav class='nav'><a href='/admin'>返回告警</a><a href='/admin/logout'>退出</a></nav></div><div class='wrap panel'><p class='muted'>管理员可分配权限：查看员只能查看，处理员可以更新告警，管理员可以管理用户。</p><table><tr><th>用户名</th><th>角色</th><th>状态</th><th>创建时间</th><th>操作</th></tr>{% for row in users %}<tr><td>{{row['username']}}</td><td>{{row['role']}}</td><td>{{'启用' if row['enabled'] else '停用'}}</td><td>{{row['created_at']}}</td><td><form method='post' style='display:flex;gap:8px'><input type='hidden' name='user_id' value='{{row['id']}}'><select name='role'>{% for role in ['viewer','operator','admin'] %}<option value='{{role}}' {% if row['role']==role %}selected{% endif %}>{{role}}</option>{% endfor %}</select><select name='enabled'><option value='1' {% if row['enabled'] else '' %}>启用</option><option value='0' {% if not row['enabled'] else '' %}>停用</option></select><button>保存</button></form></td></tr>{% endfor %}</table></div>"""
+USERS_HTML = (
+    """<!doctype html><meta charset='utf-8'><title>用户权限</title>"""
+    + BASE_STYLE
+    + """<div class='top'><strong>用户权限管理</strong><nav class='nav'><a href='/admin'>返回告警</a><a href='/admin/logout'>退出</a></nav></div><div class='wrap panel'><p class='muted'>管理员可分配权限：查看员只能查看，处理员可以更新告警，管理员可以管理用户。</p><table><tr><th>用户名</th><th>角色</th><th>状态</th><th>创建时间</th><th>操作</th></tr>{% for row in users %}<tr><td>{{row['username']}}</td><td>{{row['role']}}</td><td>{{'启用' if row['enabled'] else '停用'}}</td><td>{{row['created_at']}}</td><td><form method='post' style='display:flex;gap:8px'><input type='hidden' name='user_id' value='{{row['id']}}'><select name='role'>{% for role in ['viewer','operator','admin'] %}<option value='{{role}}' {% if row['role']==role %}selected{% endif %}>{{role}}</option>{% endfor %}</select><select name='enabled'><option value='1' {% if row['enabled'] else '' %}>启用</option><option value='0' {% if not row['enabled'] else '' %}>停用</option></select><button>保存</button></form></td></tr>{% endfor %}</table></div>"""
+)
 
 
 @app.route("/admin/users", methods=["GET", "POST"])
@@ -607,9 +716,14 @@ def admin_users():
         if role not in ROLE_PERMISSIONS or enabled not in {"0", "1"}:
             return "权限参数无效", 400
         with _db() as conn:
-            conn.execute("UPDATE admin_users SET role=%s,enabled=%s,updated_at=%s WHERE id=%s", (role, int(enabled), _now(), user_id))
+            conn.execute(
+                "UPDATE admin_users SET role=%s,enabled=%s,updated_at=%s WHERE id=%s",
+                (role, int(enabled), _now(), user_id),
+            )
     with _db() as conn:
-        users = conn.execute("SELECT id,username,role,enabled,created_at FROM admin_users ORDER BY id").fetchall()
+        users = conn.execute(
+            "SELECT id,username,role,enabled,created_at FROM admin_users ORDER BY id"
+        ).fetchall()
     return render_template_string(USERS_HTML, users=users)
 
 
