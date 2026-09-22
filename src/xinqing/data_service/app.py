@@ -11,13 +11,15 @@ import os
 import secrets
 from collections.abc import Callable
 from functools import wraps
+from pathlib import Path
 from typing import Any
 
 import structlog
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_from_directory
 
 from ..common.data_layer import DataStore, validate_user_id
 from ..common.logging_config import setup_logging
+from . import tts, workflow_client
 
 setup_logging()
 logger = structlog.get_logger("xinqing.data_service")
@@ -25,6 +27,15 @@ logger = structlog.get_logger("xinqing.data_service")
 app = Flask(__name__)
 store = DataStore()
 DATA_API_TOKEN = os.getenv("DATA_API_TOKEN", "").strip()
+
+DEFAULT_AVATAR_COMMAND = {
+    "version": 1,
+    "action": "idle",
+    "expression": "neutral",
+    "gesture": "none",
+    "intensity": 0.0,
+    "duration_ms": 1000,
+}
 
 
 def require_api_token(view: Callable[..., Any]) -> Callable[..., Any]:
@@ -96,12 +107,86 @@ def bad_request(error: ValueError) -> Any:
 
 @app.get("/health")
 def health() -> Any:
+    workflow_ok = workflow_client.check_health()
+    tts_ok = tts.check_ready()
+    all_ok = workflow_ok and tts_ok
     return jsonify(
         {
-            "status": "healthy",
+            "status": "healthy" if all_ok else "degraded",
             "service": "xin-qing-data",
-            "tts_provider": "gpt-sovits",
-            "tts_configured": bool(os.getenv("GPT_SOVITS_BASE_URL", "").strip()),
+            "workflow": "reachable" if workflow_ok else "unreachable",
+            "tts_provider": tts.PROVIDER,
+            "tts_ready": tts_ok,
+        }
+    )
+
+
+@app.get("/audio/<path:filename>")
+def serve_audio(filename: str) -> Any:
+    if not filename.lower().endswith((".mp3", ".wav")):
+        return jsonify({"status": "error", "error": "不支持的音频格式"}), 404
+    audio_dir = Path(tts.AUDIO_DIR)
+    if not audio_dir.is_dir():
+        return jsonify({"status": "error", "error": "音频目录不存在"}), 404
+    return send_from_directory(str(audio_dir), filename)
+
+
+@app.post("/chat")
+def chat() -> Any:
+    body = payload()
+    user_id = body.get("user_id", "anonymous")
+    input_type = body.get("input_type", "text")
+    conversation_id = body.get("conversation_id", "")
+    query = body.get("content", "")
+
+    if input_type != "text":
+        return (
+            jsonify({"status": "error", "error": "仅支持文本输入", "error_code": "INVALID_INPUT"}),
+            400,
+        )
+    if not query:
+        return (
+            jsonify(
+                {"status": "error", "error": "content 不能为空", "error_code": "INVALID_INPUT"}
+            ),
+            400,
+        )
+
+    try:
+        thread_id = body.get("thread_id", "") or workflow_client.create_thread(
+            user_id, conversation_id
+        )
+        result = workflow_client.run_workflow(thread_id, query, user_id, conversation_id)
+    except Exception as exc:
+        logger.error("workflow_call_failed", user_id=user_id, error=str(exc))
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "error": "工作流调用失败",
+                    "error_code": "WORKFLOW_ERROR",
+                }
+            ),
+            502,
+        )
+
+    risk_assessment = result.get("risk_assessment") or {}
+    text = result.get("response", "")
+    audio_filename = tts.synthesize(text)
+    audio_url = f"/audio/{audio_filename}" if audio_filename else None
+    if text and not audio_filename:
+        logger.warning("tts_degraded", user_id=user_id, provider=tts.PROVIDER)
+    return jsonify(
+        {
+            "status": "success",
+            "data": {
+                "text": text,
+                "audio_url": audio_url,
+                "avatar_command": result.get("avatar_command") or DEFAULT_AVATAR_COMMAND,
+                "intent": result.get("intent", "daily_support"),
+                "risk_level": risk_assessment.get("risk_level", "low"),
+            },
+            "thread_id": thread_id,
         }
     )
 

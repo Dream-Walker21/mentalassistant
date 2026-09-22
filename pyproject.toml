@@ -26,6 +26,7 @@ dependencies = [
     "tqdm>=4.64.0",
     "typing-extensions>=4.9.0",
     "structlog>=25.0.0",
+    "edge-tts>=6.1.0",
 ]
 
 [project.optional-dependencies]

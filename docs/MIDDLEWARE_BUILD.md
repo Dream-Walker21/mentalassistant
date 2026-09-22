@@ -216,7 +216,7 @@ def run_workflow(thread_id: str, query: str, user_id: str, conversation_id: str)
 
 def check_health() -> bool:
     try:
-        with urllib.request.urlopen(f"{API_URL}/health", timeout=5) as resp:
+        with urllib.request.urlopen(f"{API_URL}/ok", timeout=5) as resp:
             return resp.status == 200
     except Exception:
         return False

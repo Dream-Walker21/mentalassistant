@@ -75,7 +75,7 @@
 
 | 接口 | 方向 | 方法 & 路径 | 状态 |
 |---|---|---|---|
-| A | 前端 → data_service | `POST /chat` | 待开发（王力涵） |
+| A | 前端 → data_service | `POST /chat` | ✅ 阶段1骨架已实现（王力涵） |
 | A-health | 前端 → data_service | `GET /health` | ✅ 已实现 |
 | B | data_service → 工作流 | HTTP 调 langgraph API | ✅ langgraph dev 已暴露 |
 | D | 工作流 → 告警服务 | `POST /alert` | ✅ 已实现（`src/xinqing/data_service/alert.py`） |
@@ -141,7 +141,7 @@ Content-Type: multipart/form-data 或 application/json
 | 字段 | 类型 | 必含 | 说明 |
 |---|---|---|---|
 | `data.text` | string | 是 | 工作流生成的文字回复，前端同时显示为字幕 |
-| `data.audio_url` | string | 否 | TTS 生成的语音文件 URL；文本模式可不含 |
+| `data.audio_url` | string | 否 | TTS 生成的语音文件 URL（如 `/audio/resp-xxx.mp3`）；TTS 失败时为 null，前端仍显示文字 |
 | `data.avatar_command` | object | 是 | 立绘动作指令，见 [数据模型-AvatarCommand](#avatarcommand) |
 | `data.intent` | string | 是 | 意图分类结果：`daily_support` / `condition_judgement` / `crisis` |
 | `data.risk_level` | string | 是 | 风险等级：`low` / `medium` / `high` / `critical`；非危机路径为 `low` |
@@ -167,11 +167,10 @@ GET /health
 ```json
 {
   "status": "healthy",
-  "services": {
-    "workflow": "reachable",
-    "asr": "ready",
-    "tts": "ready"
-  }
+  "service": "xin-qing-data",
+  "workflow": "reachable",
+  "tts_provider": "edge",
+  "tts_ready": true
 }
 ```
 

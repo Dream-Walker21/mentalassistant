@@ -13,10 +13,7 @@ export default defineConfig({
         target: "http://127.0.0.1:8001",
         rewrite: (path) => path.replace(/^\/data-api/, ""),
       },
-      "/langgraph-api": {
-        target: "http://127.0.0.1:2024",
-        rewrite: (path) => path.replace(/^\/langgraph-api/, ""),
-      },
+
     },
   },
 });

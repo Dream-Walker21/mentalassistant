@@ -112,40 +112,24 @@ function renderMessages() {
   }
   els.messageList.scrollTop = els.messageList.scrollHeight;
 }
-async function runGraph(query) {
-  if (!state.threadId) {
-    const thread = await request("/langgraph-api/threads", { method: "POST", body: JSON.stringify({ metadata: { user_id: state.userId, conversation_id: state.conversationId } }) });
-    state.threadId = thread.thread_id || thread.id || state.conversationId; saveSession();
+async function chatRequest(query) {
+  const result = await request("/data-api/chat", {
+    method: "POST",
+    body: JSON.stringify({
+      user_id: state.userId,
+      input_type: "text",
+      content: query,
+      conversation_id: state.conversationId,
+      ...(state.threadId ? { thread_id: state.threadId } : {}),
+    }),
+  });
+  if (result.thread_id && result.thread_id !== state.threadId) {
+    state.threadId = result.thread_id; saveSession();
   }
-  const threadId = state.threadId;
-  const body = {
-    assistant_id: "xin_qing",
-    input: { query, user_id: state.userId, conversation_id: state.conversationId },
-    config: { configurable: { thread_id: threadId } },
-  };
-  try {
-    return await request(`/langgraph-api/threads/${encodeURIComponent(state.threadId)}/runs/wait`, { method: "POST", body: JSON.stringify(body) });
-  } catch (error) {
-    const fallback = await request("/langgraph-api/runs/wait", { method: "POST", body: JSON.stringify({ ...body, thread_id: state.threadId }) }).catch(() => null);
-    if (fallback) return fallback;
-    throw error;
-  }
+  return result;
 }
 function addMessage(role, content) {
   state.messages.push({ role, content }); renderMessages();
-}
-async function requestTts(text) {
-  // Do not enter the TTS branch unless the configured service advertises itself.
-  const health = await fetch("/data-api/health").then((response) => response.ok ? response.json() : null).catch(() => null);
-  if (!health?.tts_configured) return null;
-  const response = await fetch("/data-api/api/tts/synthesize", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ user_id: state.userId, conversation_id: state.conversationId, text }),
-  }).catch(() => null);
-  if (!response?.ok) return null;
-  const body = await response.json().catch(() => null);
-  const audioUrl = body?.audio_url || body?.job?.audio_url;
-  return audioUrl ? { ...body, audio_url: audioUrl } : null;
 }
 async function sendMessage(event) {
   event.preventDefault();
@@ -156,22 +140,18 @@ async function sendMessage(event) {
   await adapter?.startThinking();
   els.avatarCommand.textContent = "think · calm";
   try {
-    const result = await runGraph(query);
-    const response = result.response || result.output?.response || result.values?.response || "我在这里，刚才没有生成可显示的回复。";
-    const values = result.values || result.output || result;
-    showAssessment(values.assessment || values.risk_assessment);
-    if (result.conversation_id && result.conversation_id !== state.conversationId) { state.conversationId = result.conversation_id; saveSession(); }
-    // Keep the assistant bubble hidden while a configured TTS service is generating audio.
-    const speech = await requestTts(response);
+    const result = await chatRequest(query);
+    const data = result.data || {};
+    const response = data.text || "我在这里，刚才没有生成可显示的回复。";
+    showAssessment({ risk_level: data.risk_level });
     adapter?.stopThinking();
     state.thinking = false; renderMessages();
     addMessage("assistant", response);
     showAvatarReply(response);
-    if (result.avatar_command || result.values?.avatar_command) {
-      const command = result.avatar_command || result.values.avatar_command;
-      await adapter?.play(command); els.avatarCommand.textContent = `${command.action || "idle"} · ${command.expression || "calm"}`;
+    if (data.avatar_command) {
+      await adapter?.play(data.avatar_command); els.avatarCommand.textContent = `${data.avatar_command.action || "idle"} · ${data.avatar_command.expression || "calm"}`;
     }
-    if (speech?.audio_url) await adapter?.speak(speech.audio_url);
+    if (data.audio_url) await adapter?.speak("/data-api" + data.audio_url);
   } catch (error) {
     adapter?.stopThinking();
     state.thinking = false; renderMessages();
