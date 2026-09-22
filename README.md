@@ -249,11 +249,11 @@ $env:ALERT_WEBHOOK_URL = "https://example.com/alert"
 
 服务接口：`POST /alert`，请求体可以是 `{"alert_data": {"user_id": "demo-user", ...}}`；健康检查为 `GET /health`。新增发送方式时，实现 `AlertNotifier.send()` 并在 `create_notifier()` 注册即可，不需要修改 LangGraph。
 
-告警服务会把预警保存到 `ALERT_DB_PATH` 指定的 SQLite 文件（默认 `alert_data.sqlite3`），并按 `alert_id` 去重，记录邮件发送状态。管理界面地址为 `http://127.0.0.1:5000/admin`，启动前配置 `ADMIN_TOKEN` 和 `ADMIN_SESSION_SECRET`，登录后可以按用户 ID、风险等级和处理状态筛选，查看详情并更新 `new`、`in_progress`、`contacted`、`closed` 状态。配置 `ALERT_API_TOKEN` 后，LangGraph 会自动通过 `X-API-Key` 请求头访问 `/alert`。
+告警服务会把预警保存到 `ALERT_DB_URL` 指定的 PostgreSQL 数据库，并按 `alert_id` 去重，记录邮件发送状态。管理界面地址为 `http://127.0.0.1:5000/admin`，启动前配置 `ADMIN_TOKEN` 和 `ADMIN_SESSION_SECRET`，登录后可以按用户 ID、风险等级和处理状态筛选，查看详情并更新 `new`、`in_progress`、`contacted`、`closed` 状态。配置 `ALERT_API_TOKEN` 后，LangGraph 会自动通过 `X-API-Key` 请求头访问 `/alert`。
 
 ## 用户数据服务
 
-`data_layer.py` 是 LangGraph 和 Web API 共用的 SQLite 数据层。它按稳定匿名 `user_id` 保存用户自主设置的显示名、偏好、Live2D 模型和语音档案，同时保存会话、消息与结构化评估；不保存姓名、联系方式等实名身份字段。数据文件由 `DATA_DB_PATH` 指定，默认是 `data/assistant_data.sqlite3`，与高敏感的告警数据库分开。
+`data_layer.py` 是 LangGraph 和 Web API 共用的 PostgreSQL 数据层。它按稳定匿名 `user_id` 保存用户自主设置的显示名、偏好、Live2D 模型和语音档案，同时保存会话、消息与结构化评估；不保存姓名、联系方式等实名身份字段。数据库由 `DATA_DB_URL` 指定，默认连接本地 `postgresql://xinqing:xinqing@localhost:5432/xinqing`，与告警服务可共用同一个数据库（表名不冲突）。
 
 启动数据 API：
 

@@ -13,8 +13,11 @@ import json
 import logging
 import os
 import secrets
-import sqlite3
 import smtplib
+
+import psycopg
+from psycopg.rows import dict_row
+from psycopg.errors import UniqueViolation
 from abc import ABC, abstractmethod
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -44,7 +47,7 @@ logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("xin-qing-alert")
 app = Flask(__name__)
 app.secret_key = os.getenv("ADMIN_SESSION_SECRET", "local-development-session-secret")
-DB_PATH = Path(os.getenv("ALERT_DB_PATH", str(Path(__file__).with_name("alert_data.sqlite3"))))
+DB_URL = os.getenv("ALERT_DB_URL", "postgresql://xinqing:xinqing@localhost:5432/xinqing")
 API_TOKEN = os.getenv("ALERT_API_TOKEN", "").strip()
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "").strip()
 DEFAULT_ADMIN_USERNAME = os.getenv("ADMIN_DEFAULT_USERNAME", "admin").strip() or "admin"
@@ -61,16 +64,15 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _db() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, timeout=30)
-    conn.row_factory = sqlite3.Row
+def _db() -> psycopg.Connection:
+    conn = psycopg.connect(DB_URL, autocommit=False)
+    conn.row_factory = dict_row
     return conn
 
 
 def init_db() -> None:
     with _db() as conn:
-        conn.executescript("""
+        conn.execute("""
         CREATE TABLE IF NOT EXISTS alerts (
           alert_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, received_at TEXT NOT NULL,
           source_timestamp TEXT, risk_level TEXT NOT NULL, urgency TEXT, stress_level TEXT,
@@ -79,13 +81,13 @@ def init_db() -> None:
           handling_note TEXT, payload_json TEXT NOT NULL, updated_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS email_deliveries (
-          id INTEGER PRIMARY KEY AUTOINCREMENT, alert_id TEXT NOT NULL, attempted_at TEXT NOT NULL,
+          id SERIAL PRIMARY KEY, alert_id TEXT NOT NULL, attempted_at TEXT NOT NULL,
           status TEXT NOT NULL, recipients_count INTEGER NOT NULL DEFAULT 0, error TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_alerts_received ON alerts(received_at DESC);
         CREATE INDEX IF NOT EXISTS idx_alerts_user ON alerts(user_id);
         CREATE TABLE IF NOT EXISTS admin_users (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          id SERIAL PRIMARY KEY,
           username TEXT NOT NULL UNIQUE,
           password_hash TEXT NOT NULL,
           role TEXT NOT NULL DEFAULT 'viewer',
@@ -94,10 +96,10 @@ def init_db() -> None:
           updated_at TEXT NOT NULL
         );
         """)
-        row = conn.execute("SELECT id FROM admin_users WHERE username=?", (DEFAULT_ADMIN_USERNAME,)).fetchone()
+        row = conn.execute("SELECT id FROM admin_users WHERE username=%s", (DEFAULT_ADMIN_USERNAME,)).fetchone()
         if row is None:
             conn.execute(
-                "INSERT INTO admin_users(username,password_hash,role,enabled,created_at,updated_at) VALUES (?,?,?,?,?,?)",
+                "INSERT INTO admin_users(username,password_hash,role,enabled,created_at,updated_at) VALUES (%s,%s,%s,%s,%s,%s)",
                 (DEFAULT_ADMIN_USERNAME, generate_password_hash(DEFAULT_ADMIN_PASSWORD), "admin", 1, _now(), _now()),
             )
 
@@ -107,9 +109,10 @@ def _save_alert(payload: Mapping[str, Any]) -> bool:
     received = _now()
     with _db() as conn:
         cur = conn.execute("""
-          INSERT OR IGNORE INTO alerts
+          INSERT INTO alerts
           (alert_id,user_id,received_at,source_timestamp,risk_level,urgency,stress_level,immediate_action,payload_json,updated_at)
-          VALUES (?,?,?,?,?,?,?,?,?,?)
+          VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+          ON CONFLICT (alert_id) DO NOTHING
         """, (str(payload["alert_id"]), str(payload["user_id"]), received,
           str(payload.get("timestamp", "")), str(risk.get("risk_level", "unknown")).lower(),
           str(risk.get("urgency", "未知")), str(risk.get("stress_level", "未知")),
@@ -121,13 +124,13 @@ def _save_alert(payload: Mapping[str, Any]) -> bool:
 def _record_email(alert_id: str, status: str, error: str | None = None, recipients: int = 0) -> None:
     timestamp = _now()
     with _db() as conn:
-        conn.execute("UPDATE alerts SET email_status=?,email_error=?,updated_at=? WHERE alert_id=?", (status, error, timestamp, alert_id))
-        conn.execute("INSERT INTO email_deliveries(alert_id,attempted_at,status,recipients_count,error) VALUES (?,?,?,?,?)", (alert_id, timestamp, status, recipients, error))
+        conn.execute("UPDATE alerts SET email_status=%s,email_error=%s,updated_at=%s WHERE alert_id=%s", (status, error, timestamp, alert_id))
+        conn.execute("INSERT INTO email_deliveries(alert_id,attempted_at,status,recipients_count,error) VALUES (%s,%s,%s,%s,%s)", (alert_id, timestamp, status, recipients, error))
 
 
 def _get_alert(alert_id: str):
     with _db() as conn:
-        return conn.execute("SELECT * FROM alerts WHERE alert_id=?", (alert_id,)).fetchone()
+        return conn.execute("SELECT * FROM alerts WHERE alert_id=%s", (alert_id,)).fetchone()
 
 
 def _authorized() -> bool:
@@ -144,7 +147,7 @@ def current_admin() -> dict[str, Any] | None:
     if not user_id:
         return None
     with _db() as conn:
-        row = conn.execute("SELECT * FROM admin_users WHERE id=? AND enabled=1", (user_id,)).fetchone()
+        row = conn.execute("SELECT * FROM admin_users WHERE id=%s AND enabled=1", (user_id,)).fetchone()
     return dict(row) if row else None
 
 
@@ -430,9 +433,9 @@ def _admin_rows():
     init_db()
     risk, status, user_id = request.args.get("risk", "").strip().lower(), request.args.get("status", "").strip().lower(), request.args.get("user_id", "").strip()
     query, values = "SELECT * FROM alerts WHERE 1=1", []
-    if risk: query += " AND risk_level=?"; values.append(risk)
-    if status: query += " AND handling_status=?"; values.append(status)
-    if user_id: query += " AND user_id LIKE ?"; values.append(f"%{user_id}%")
+    if risk: query += " AND risk_level=%s"; values.append(risk)
+    if status: query += " AND handling_status=%s"; values.append(status)
+    if user_id: query += " AND user_id LIKE %s"; values.append(f"%{user_id}%")
     query += " ORDER BY CASE risk_level WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 ELSE 4 END, received_at DESC LIMIT 200"
     with _db() as conn: return conn.execute(query, values).fetchall()
 
@@ -452,7 +455,7 @@ def _percent(value: float | None, maximum: float) -> int:
     return max(0, min(100, round(value / maximum * 100)))
 
 
-def _risk_metrics(payload: Mapping[str, Any], row: sqlite3.Row) -> list[dict[str, Any]]:
+def _risk_metrics(payload: Mapping[str, Any], row: dict[str, Any]) -> list[dict[str, Any]]:
     risk = payload.get("risk_assessment") or {}
     if not isinstance(risk, Mapping):
         risk = {}
@@ -503,7 +506,7 @@ def admin_login():
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
         with _db() as conn:
-            user = conn.execute("SELECT * FROM admin_users WHERE username=? AND enabled=1", (username,)).fetchone()
+            user = conn.execute("SELECT * FROM admin_users WHERE username=%s AND enabled=1", (username,)).fetchone()
         if user and check_password_hash(user["password_hash"], password):
             session.clear()
             session["admin_user_id"] = user["id"]
@@ -533,9 +536,9 @@ def admin_register():
             try:
                 with _db() as conn:
                     now = _now()
-                    conn.execute("INSERT INTO admin_users(username,password_hash,role,enabled,created_at,updated_at) VALUES (?,?,?,?,?,?)", (username, generate_password_hash(password), "viewer", 1, now, now))
+                    conn.execute("INSERT INTO admin_users(username,password_hash,role,enabled,created_at,updated_at) VALUES (%s,%s,%s,%s,%s,%s)", (username, generate_password_hash(password), "viewer", 1, now, now))
                 return redirect(url_for("admin_login"))
-            except sqlite3.IntegrityError:
+            except UniqueViolation:
                 error = "用户名已存在。"
     return render_template_string(REGISTER_HTML, error=error)
 
@@ -564,7 +567,7 @@ def admin_detail(alert_id: str):
         status = request.form.get("handling_status", "new")
         if status not in {"new", "in_progress", "contacted", "closed"}: return "处理状态无效", 400
         with _db() as conn:
-            conn.execute("UPDATE alerts SET handling_status=?,handled_by=?,handling_note=?,updated_at=? WHERE alert_id=?", (status, request.form.get("handled_by", "").strip(), request.form.get("handling_note", "").strip(), _now(), alert_id))
+            conn.execute("UPDATE alerts SET handling_status=%s,handled_by=%s,handling_note=%s,updated_at=%s WHERE alert_id=%s", (status, request.form.get("handled_by", "").strip(), request.form.get("handling_note", "").strip(), _now(), alert_id))
         row = _get_alert(alert_id)
     payload = json.loads(row["payload_json"])
     return render_template_string(
@@ -594,7 +597,7 @@ def admin_users():
         if role not in ROLE_PERMISSIONS or enabled not in {"0", "1"}:
             return "权限参数无效", 400
         with _db() as conn:
-            conn.execute("UPDATE admin_users SET role=?,enabled=?,updated_at=? WHERE id=?", (role, int(enabled), _now(), user_id))
+            conn.execute("UPDATE admin_users SET role=%s,enabled=%s,updated_at=%s WHERE id=%s", (role, int(enabled), _now(), user_id))
     with _db() as conn:
         users = conn.execute("SELECT id,username,role,enabled,created_at FROM admin_users ORDER BY id").fetchall()
     return render_template_string(USERS_HTML, users=users)
@@ -605,4 +608,4 @@ init_db()
 
 if __name__ == "__main__":
     port = int(os.getenv("ALERT_PORT", os.getenv("PORT", "5000")))
-    app.run(host=os.getenv("ALERT_HOST", "0.0.0.0"), port=port, debug=False)
+    app.run(host=os.getenv("ALERT_HOST", "0.0.0.0"), port=port, debug=False, threaded=True)

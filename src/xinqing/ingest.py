@@ -31,6 +31,11 @@ CHROMA_DIR = ROOT / "data" / "chroma"
 MODELSCOPE_EMBEDDING_MODEL = "BAAI/bge-m3"
 LOCAL_EMBEDDING_DIR = ROOT / "models" / "bge-m3"
 
+EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "local")
+EMBEDDING_API_KEY = os.getenv("EMBEDDING_API_KEY", "")
+EMBEDDING_BASE_URL = os.getenv("EMBEDDING_BASE_URL", "")
+EMBEDDING_API_MODEL = os.getenv("EMBEDDING_API_MODEL", "BAAI/bge-m3")
+
 # Sentence Transformers only needs the PyTorch encoder, tokenizer and module
 # configuration below. The ModelScope repository also contains an optional
 # ONNX export (including a second ~2 GB weight data file) which this RAG does not
@@ -128,7 +133,20 @@ def create_embeddings(
     embedding_model: str = MODELSCOPE_EMBEDDING_MODEL,
     model_dir: Path = LOCAL_EMBEDDING_DIR,
 ):
-    """Create embeddings from the local ModelScope model directory."""
+    """Create embeddings from a local model directory or an OpenAI-compatible API."""
+
+    if EMBEDDING_PROVIDER == "api":
+        from langchain_openai import OpenAIEmbeddings
+
+        if not EMBEDDING_API_KEY or not EMBEDDING_BASE_URL:
+            raise RuntimeError(
+                "EMBEDDING_PROVIDER=api 需要同时设置 EMBEDDING_API_KEY 和 EMBEDDING_BASE_URL"
+            )
+        return OpenAIEmbeddings(
+            model=EMBEDDING_API_MODEL,
+            api_key=EMBEDDING_API_KEY,
+            base_url=EMBEDDING_BASE_URL,
+        )
 
     import torch
     from langchain_huggingface import HuggingFaceEmbeddings

@@ -1,7 +1,7 @@
 """HTTP data service for the web client and future voice adapter.
 
 Run independently from the LangGraph server. Both processes share the same
-``DATA_DB_PATH`` file, so the graph can resolve a user profile by user_id while
+``DATA_DB_URL`` database, so the graph can resolve a user profile by user_id while
 the frontend manages the user's profile and conversation history.
 """
 
@@ -176,4 +176,4 @@ def tts_job(user_id: str, job_id: str) -> Any:
 
 if __name__ == "__main__":
     port = int(os.getenv("DATA_PORT", "8001"))
-    app.run(host=os.getenv("DATA_HOST", "127.0.0.1"), port=port, debug=False)
+    app.run(host=os.getenv("DATA_HOST", "127.0.0.1"), port=port, debug=False, threaded=True)
