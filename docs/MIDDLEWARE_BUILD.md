@@ -1,6 +1,6 @@
 # data_service 兼中间层开发文档
 
-> 状态：待开发。本文档是自包含的交接文档，可直接用于新对话开发。
+> 状态：阶段1-2已完成（commit 8184d30，已 push origin+upstream）。阶段3-4待开发。
 > 负责人：王力涵
 > 关联：`API_CONTRACT.md`、`AUTH_DESIGN.md`、`AGENTS.md`
 
