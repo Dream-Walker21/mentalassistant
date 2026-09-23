@@ -1,6 +1,6 @@
 # data_service 兼中间层开发文档
 
-> 状态：阶段1-2已完成（commit 8184d30，已 push origin+upstream）。阶段3-4待开发。
+> 状态：阶段1-2 + JWT鉴权已完成（commit b1f2d69，已 push origin+upstream）。阶段3-4待开发。
 > 负责人：王力涵
 > 关联：`API_CONTRACT.md`、`AUTH_DESIGN.md`、`AGENTS.md`
 
@@ -304,7 +304,7 @@ def health() -> Any:
 
 ## 8. 鉴权说明
 
-**阶段 1-4 不做鉴权**。JWT 鉴权推迟到 /chat 链路跑通后，按 `docs/AUTH_DESIGN.md` 落地。data_service 是唯一面向前端的入口，JWT 在这里验；langgraph/alert 用服务间 key。
+**JWT 鉴权已落地**（commit b1f2d69）。data_service 是唯一面向前端的入口，JWT 在这里验（HS256 + `JWT_SECRET`，双 token：access 存内存 + refresh 存 httpOnly cookie）；langgraph/alert 用服务间 key（待蒋状钊接入）。详见 `docs/AUTH_DESIGN.md`。
 
 ---
 

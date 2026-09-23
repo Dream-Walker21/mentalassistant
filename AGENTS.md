@@ -323,7 +323,7 @@ L0 基础设施
 
 | 模块 | 状态 | 负责人 |
 |---|---|---|
-| 智能体工作流（workflow/ + common/config.py） | ✅ 代码完成，待端到端验证 | 蒋状钊 |
+| 智能体工作流（workflow/ + common/config.py） | ✅ 代码完成 + 知识库索引已建 | 蒋状钊 |
 | 告警服务（data_service/alert.py） | ✅ 完成 | 王力涵 |
 | 数据层（common/data_layer.py） | ✅ 完成 | 王力涵 |
 | 数据 API（data_service/app.py） | ✅ 完成 | 王力涵 |
@@ -331,13 +331,16 @@ L0 基础设施
 | 部署脚本（scripts/） | ✅ 完成 | 王力涵 |
 | 接口契约文档 | ✅ 完成 | 共同 |
 | 目录结构重构（按服务分包） | ✅ 完成 | 王力涵 |
-| /chat 中间层路由（data_service/app.py） | ❌ 未开始 | 王力涵 |
+| /chat 中间层路由（data_service/app.py） | ✅ 已完成（commit 8184d30） | 王力涵 |
+| TTS 语音合成（edge-tts + GPT-SoVITS 骨架） | ✅ 已完成 | 王力涵 |
+| JWT 鉴权（双 token + refresh + SHA-256 session） | ✅ 已完成（commit b1f2d69） | 王力涵 |
+| 知识库索引构建 | ✅ 已完成 | 蒋状钊 |
 | 正式 Web 前端 | ❌ 未开始 | 袁群 |
 | 测试代码（tests/） | ❌ 未开始 | 共同 |
-| 知识库索引构建 | ❌ 未跑通 | 蒋状钊 |
 
-### 下一步（按 API_CONTRACT.md §9 联调顺序）
-1. 蒋状钊：跑通 `ingest.py` 建 Chroma 索引 + 端到端测试三条分支
-2. 王力涵：在 data_service 实现 /chat 骨架（文本透传调工作流 + `GET /health`）
-3. 袁群：实现前端骨架（文本输入 + 文字回复展示）
-4. 三方联调文字链路 → 接入 TTS → 接入立绘 → 危机路径联调
+### 下一步
+1. 袁群：实现正式前端骨架（参考 `web/live2d_demo/` 的 token 逻辑：access 存内存 + refresh cookie + 401 自动恢复）
+2. 蒋状钊：langgraph 服务间鉴权（验 `SERVICE_API_KEY`，AUTH_DESIGN.md §8 第 4 项）
+3. 共同：危机路径联调（确认高危时工作流直调告警、data_service 容忍告警失败不阻断回复）
+4. 王力涵：GPT-SoVITS 联调（等服务起来再调）
+5. 共同：补测试代码（tests/）
