@@ -1,6 +1,6 @@
 # 心晴助手 鉴权机制设计文档
 
-> 状态：设计已定稿，待 /chat 链路跑通后落地。
+> 状态：JWT 鉴权已落地（data_service + 前端测试面板），langgraph 服务间鉴权待蒋状钊接入。
 > 方案：C（data_service 兼中间层统一鉴权）+ 企业级 JWT。
 > 关联：`API_CONTRACT.md §7`、`AGENTS.md §3 接口边界`。
 
@@ -44,9 +44,9 @@
           │  唯一入口
           ▼
 ┌─ data_service (8001) ─────────────────────────────────────────────┐
-│  /auth/login    验密码 → 签 JWT                                    │
-│  /auth/refresh  验 refresh → 签新 access                           │
-│  /auth/me       验 access → 返回用户信息                           │
+│  /api/auth/login    验密码 → 签 JWT                                    │
+│  /api/auth/refresh  验 refresh → 签新 access                           │
+│  /api/auth/me       验 access → 返回用户信息                           │
 │  /chat 等业务    验 access → 提取 user_id → 调下游(带服务间key)     │
 │  /api/* 数据     验 access → 数据 CRUD                             │
 └────┬───────────────────────────────────────────────────────────────┘
@@ -71,7 +71,7 @@
 | Access Token | 15-30 分钟 | 前端内存（不存 localStorage，防 XSS） | 每次 API 调用带在 `Authorization: Bearer` header |
 | Refresh Token | 7-30 天 | httpOnly + Secure cookie；DB 存 SHA-256 哈希 | access 过期后用它换新 access |
 
-**设计理由**：access 短命→泄露窗口小；refresh 长命但只走 `/auth/refresh` 一个接口，可服务端吊销。
+**设计理由**：access 短命→泄露窗口小；refresh 长命但只走 `/api/auth/refresh` 一个接口，可服务端吊销。
 
 ### 4.2 JWT payload
 
@@ -107,22 +107,22 @@
 ### 5.1 data_service 新增接口
 
 ```
-POST /auth/login
+POST /api/auth/login
   请求: { "nickname": "...", "password": "..." }
   响应: { "access_token": "...", "user": { "user_id": "...", "display_name": "..." } }
   副作用: Set-Cookie: refresh=...; HttpOnly; Secure; SameSite=Strict
 
-POST /auth/refresh
+POST /api/auth/refresh
   请求: 无 body（从 cookie 读 refresh token）
   响应: { "access_token": "..." }
   副作用: 轮换 refresh token（旧的标记 revoked，发新的）
 
-POST /auth/logout
+POST /api/auth/logout
   请求: 无 body
   响应: { "status": "success" }
   副作用: 删除 cookie，DB 中 refresh token 标记 revoked
 
-GET /auth/me
+GET /api/auth/me
   请求: Authorization: Bearer <access_token>
   响应: { "user_id": "...", "display_name": "...", "nickname": "..." }
 ```
@@ -142,7 +142,7 @@ GET /auth/me
 | `data_service/app.py` `require_api_token` | 改为用户 JWT 鉴权 | 从静态 API key 改为验 Bearer JWT |
 | `app.py`/langgraph | 加服务间鉴权 | 只允许 data_service 调，不直接面向前端 |
 | `alert.py` 管理后台 | **不动** | 管理员鉴权与用户 JWT 本就是两套 |
-| 前端 `app.js` | 改调 data_service `/auth/*` + `/chat` | 不再直连 langgraph |
+| 前端 `app.js` | 改调 data_service `/api/auth/*` + `/chat` | 不再直连 langgraph |
 
 ---
 
@@ -164,15 +164,15 @@ GET /auth/me
 
 /chat 链路跑通后按此清单推进：
 
-| # | 改动 | 负责人 | 层次 | 触及边界 |
-|---|---|---|---|---|
-| 1 | data_service 实现 `/auth/login` `/auth/refresh` `/auth/me` `/auth/logout`，用 PyJWT 签发/验证 | 王力涵 | L2 | 是（新增接口） |
-| 2 | `data_layer.py` session 方法改为 refresh token 存储，token_hash 用 SHA-256 | 王力涵 | L0 | 是（DataStore 公共方法） |
-| 3 | `data_service/app.py` `require_api_token` 改为用户 JWT 鉴权 | 王力涵 | L2 | 是（/api/* 接口） |
-| 4 | `app.py`/langgraph 加服务间鉴权 | 蒋状钊 | L2 | 是 |
-| 5 | 前端改调 data_service，token 存内存 + refresh cookie | 袁群 | L3 | 是 |
-| 6 | `API_CONTRACT.md §7` 更新：匿名→JWT 鉴权，补 token 模型和接口定义 | 共同 | 文档 | 是 |
-| 7 | `.env.example` 加 `JWT_SECRET`、`SERVICE_API_KEY` | 王力涵 | L0 | 是 |
+| # | 改动 | 负责人 | 层次 | 触及边界 | 状态 |
+|---|---|---|---|---|---|
+| 1 | data_service 实现 `/api/auth/login` `/api/auth/refresh` `/api/auth/me` `/api/auth/logout`，用 PyJWT 签发/验证 | 王力涵 | L2 | 是（新增接口） | ✅ |
+| 2 | `data_layer.py` session 方法改为 refresh token 存储，token_hash 用 SHA-256 | 王力涵 | L0 | 是（DataStore 公共方法） | ✅ |
+| 3 | `data_service/app.py` `require_api_token` 改为用户 JWT 鉴权 | 王力涵 | L2 | 是（/api/* 接口） | ✅ |
+| 4 | `app.py`/langgraph 加服务间鉴权 | 蒋状钊 | L2 | 是 | ❌ 待蒋状钊 |
+| 5 | 前端改调 data_service，token 存内存 + refresh cookie | 袁群 | L3 | 是 | ✅ 测试面板已改 |
+| 6 | `API_CONTRACT.md §7` 更新：匿名→JWT 鉴权，补 token 模型和接口定义 | 共同 | 文档 | 是 | ✅ |
+| 7 | `.env.example` 加 `JWT_SECRET`、`SERVICE_API_KEY` | 王力涵 | L0 | 是 | ✅ |
 
 ---
 

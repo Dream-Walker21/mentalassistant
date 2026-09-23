@@ -440,7 +440,10 @@ interface ChatResponse {
 ## 7. 安全约定
 
 1. **API Key 不进前端**：DeepSeek 密钥、SMTP 密码只在后端环境变量中配置。
-2. **用户匿名**：`user_id` 不绑定真实身份，前端可生成随机 ID 存 localStorage。
+2. **JWT 鉴权**：data_service 是前端唯一入口，验 JWT access token（HS256 + `JWT_SECRET`）。用户注册/登录拿 access_token（存前端内存）+ refresh_token（httpOnly cookie）。`/chat` 和 `/api/*` 接口需带 `Authorization: Bearer <access_token>`；`user_id` 从 JWT 的 `sub` 字段提取，不信任请求体传的 `user_id`。详见 `docs/AUTH_DESIGN.md`。
+   - **Token 模型**：access token 30 分钟（`JWT_ACCESS_EXPIRE_MINUTES`），refresh token 7 天（`JWT_REFRESH_EXPIRE_DAYS`），refresh 存 DB（SHA-256 hash，可吊销）。
+   - **鉴权接口**：`POST /api/auth/register`、`POST /api/auth/login`、`POST /api/auth/refresh`、`POST /api/auth/logout`、`GET /api/auth/me`。
+   - **401 自动恢复**：前端收到 401 时自动调 `/api/auth/refresh`，成功后重试原请求，对用户无感。
 3. **告警脱敏**：告警邮件中的用户输入截断为前 500 字（`src/xinqing/alert.py` 已实现）。
 4. **非诊断声明**：所有回复不构成医学诊断，风险评估仅作参考信号。
 5. **危机安全边界**：工作流不提供自伤方法、不做诊断；高风险场景鼓励联系心理热线 `025-58255200` 或急救服务。

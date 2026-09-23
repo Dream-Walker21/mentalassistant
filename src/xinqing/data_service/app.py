@@ -8,25 +8,26 @@ the frontend manages the user's profile and conversation history.
 from __future__ import annotations
 
 import os
-import secrets
 from collections.abc import Callable
 from functools import wraps
 from pathlib import Path
 from typing import Any
 
 import structlog
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, g, jsonify, make_response, request, send_from_directory
 
 from ..common.data_layer import DataStore, validate_user_id
 from ..common.logging_config import setup_logging
-from . import tts, workflow_client
+from . import auth, tts, workflow_client
 
 setup_logging()
 logger = structlog.get_logger("xinqing.data_service")
 
 app = Flask(__name__)
 store = DataStore()
-DATA_API_TOKEN = os.getenv("DATA_API_TOKEN", "").strip()
+
+REFRESH_COOKIE_NAME = "refresh_token"
+REFRESH_COOKIE_PATH = "/"
 
 DEFAULT_AVATAR_COMMAND = {
     "version": 1,
@@ -38,19 +39,46 @@ DEFAULT_AVATAR_COMMAND = {
 }
 
 
-def require_api_token(view: Callable[..., Any]) -> Callable[..., Any]:
+def require_auth(view: Callable[..., Any]) -> Callable[..., Any]:
     @wraps(view)
     def wrapped(*args: Any, **kwargs: Any) -> Any:
-        if not DATA_API_TOKEN:
-            return view(*args, **kwargs)
-        token = request.headers.get("X-API-Key", "")
-        if token.lower().startswith("bearer "):
-            token = token[7:].strip()
-        if not token or not secrets.compare_digest(token, DATA_API_TOKEN):
-            return jsonify({"status": "error", "error": "未授权"}), 401
+        user_id = auth.verify_access_token(bearer_token())
+        if not user_id:
+            return (
+                jsonify({"status": "error", "error": "未授权", "error_code": "UNAUTHORIZED"}),
+                401,
+            )
+        g.user_id = user_id
         return view(*args, **kwargs)
 
     return wrapped
+
+
+def _set_refresh_cookie(response: Any, token: str) -> Any:
+    response.set_cookie(
+        REFRESH_COOKIE_NAME,
+        token,
+        httponly=True,
+        secure=os.getenv("FLASK_ENV") == "production",
+        samesite="Strict",
+        max_age=int(os.getenv("JWT_REFRESH_EXPIRE_DAYS", "7")) * 86400,
+        path=REFRESH_COOKIE_PATH,
+    )
+    return response
+
+
+def _clear_refresh_cookie(response: Any) -> Any:
+    response.delete_cookie(REFRESH_COOKIE_NAME, path=REFRESH_COOKIE_PATH)
+    return response
+
+
+def _forbidden_if_mismatch(user_id: str) -> Any | None:
+    if user_id != g.user_id:
+        return (
+            jsonify({"status": "error", "error": "无权访问", "error_code": "FORBIDDEN"}),
+            403,
+        )
+    return None
 
 
 def payload() -> dict[str, Any]:
@@ -66,7 +94,6 @@ def bearer_token() -> str:
 
 
 @app.post("/api/auth/register")
-@require_api_token
 def register() -> Any:
     body = payload()
     user = store.register_user(
@@ -75,29 +102,61 @@ def register() -> Any:
         body.get("real_name"),
         body.get("emergency_contacts"),
     )
-    token = store.create_session(user["user_id"])
-    return jsonify({"status": "success", "token": token, "user": user}), 201
+    access_token = auth.create_access_token(user["user_id"])
+    refresh_token = store.create_session(user["user_id"])
+    response = make_response(
+        jsonify({"status": "success", "access_token": access_token, "user": user}), 201
+    )
+    return _set_refresh_cookie(response, refresh_token)
 
 
 @app.post("/api/auth/login")
-@require_api_token
 def login() -> Any:
     body = payload()
     user = store.authenticate_user(body.get("nickname"), body.get("password"))
     if user is None:
         return jsonify({"status": "error", "error": "昵称或密码不正确"}), 401
-    return jsonify(
-        {"status": "success", "token": store.create_session(user["user_id"]), "user": user}
+    access_token = auth.create_access_token(user["user_id"])
+    refresh_token = store.create_session(user["user_id"])
+    response = make_response(
+        jsonify({"status": "success", "access_token": access_token, "user": user})
     )
+    return _set_refresh_cookie(response, refresh_token)
+
+
+@app.post("/api/auth/refresh")
+def refresh() -> Any:
+    refresh_token = request.cookies.get(REFRESH_COOKIE_NAME, "")
+    user_id = store.session_user(refresh_token)
+    if not user_id:
+        response = make_response(
+            jsonify(
+                {"status": "error", "error": "refresh token 无效", "error_code": "INVALID_REFRESH"}
+            ),
+            401,
+        )
+        return _clear_refresh_cookie(response)
+    store.revoke_session(refresh_token)
+    new_refresh = store.create_session(user_id)
+    access_token = auth.create_access_token(user_id)
+    response = make_response(jsonify({"status": "success", "access_token": access_token}))
+    return _set_refresh_cookie(response, new_refresh)
 
 
 @app.post("/api/auth/logout")
-@require_api_token
 def logout() -> Any:
-    token = bearer_token()
-    if token:
-        store.revoke_session(token)
-    return jsonify({"status": "success"})
+    refresh_token = request.cookies.get(REFRESH_COOKIE_NAME, "")
+    if refresh_token:
+        store.revoke_session(refresh_token)
+    response = make_response(jsonify({"status": "success"}))
+    return _clear_refresh_cookie(response)
+
+
+@app.get("/api/auth/me")
+@require_auth
+def me() -> Any:
+    user = store.public_user(g.user_id)
+    return jsonify({"status": "success", "user": user})
 
 
 @app.errorhandler(ValueError)
@@ -132,9 +191,10 @@ def serve_audio(filename: str) -> Any:
 
 
 @app.post("/chat")
+@require_auth
 def chat() -> Any:
     body = payload()
-    user_id = body.get("user_id", "anonymous")
+    user_id = g.user_id
     input_type = body.get("input_type", "text")
     conversation_id = body.get("conversation_id", "")
     query = body.get("content", "")
@@ -192,9 +252,12 @@ def chat() -> Any:
 
 
 @app.route("/api/users/<user_id>", methods=["GET", "PUT", "DELETE"])
-@require_api_token
+@require_auth
 def user_resource(user_id: str) -> Any:
     user_id = validate_user_id(user_id)
+    denied = _forbidden_if_mismatch(user_id)
+    if denied:
+        return denied
     if request.method == "GET":
         # Keep sensitive registration fields server-side.  The browser only
         # needs the public profile to restore the chat shell.
@@ -208,14 +271,22 @@ def user_resource(user_id: str) -> Any:
 
 
 @app.get("/api/users/<user_id>/context")
-@require_api_token
+@require_auth
 def user_context(user_id: str) -> Any:
+    user_id = validate_user_id(user_id)
+    denied = _forbidden_if_mismatch(user_id)
+    if denied:
+        return denied
     return jsonify({"status": "success", "context": store.user_context(user_id)})
 
 
 @app.route("/api/users/<user_id>/conversations", methods=["GET", "POST"])
-@require_api_token
+@require_auth
 def conversations(user_id: str) -> Any:
+    user_id = validate_user_id(user_id)
+    denied = _forbidden_if_mismatch(user_id)
+    if denied:
+        return denied
     if request.method == "GET":
         return jsonify(
             {
@@ -233,8 +304,12 @@ def conversations(user_id: str) -> Any:
 
 
 @app.route("/api/users/<user_id>/assessments", methods=["GET", "POST"])
-@require_api_token
+@require_auth
 def assessments(user_id: str) -> Any:
+    user_id = validate_user_id(user_id)
+    denied = _forbidden_if_mismatch(user_id)
+    if denied:
+        return denied
     if request.method == "GET":
         return jsonify(
             {
@@ -253,12 +328,10 @@ def assessments(user_id: str) -> Any:
 
 
 @app.route("/api/conversations/<conversation_id>/messages", methods=["GET", "POST"])
-@require_api_token
+@require_auth
 def messages(conversation_id: str) -> Any:
+    user_id = g.user_id
     if request.method == "GET":
-        user_id = request.args.get("user_id")
-        if not user_id:
-            raise ValueError("需要 user_id 查询参数")
         return jsonify(
             {
                 "status": "success",
@@ -268,10 +341,8 @@ def messages(conversation_id: str) -> Any:
             }
         )
     body = payload()
-    if "user_id" not in body:
-        raise ValueError("需要 user_id")
     message = store.add_message(
-        body["user_id"],
+        user_id,
         conversation_id,
         str(body.get("role", "")),
         body.get("content", ""),
@@ -281,14 +352,13 @@ def messages(conversation_id: str) -> Any:
 
 
 @app.post("/api/tts/synthesize")
-@require_api_token
+@require_auth
 def tts_synthesize() -> Any:
     """Create a durable GPT-SoVITS request without coupling to its API yet."""
     body = payload()
-    if "user_id" not in body:
-        raise ValueError("需要 user_id")
+    user_id = g.user_id
     job = store.create_tts_job(
-        body["user_id"],
+        user_id,
         body.get("text", ""),
         body.get("conversation_id"),
         body.get("voice_profile", ""),
@@ -306,8 +376,12 @@ def tts_synthesize() -> Any:
 
 
 @app.get("/api/users/<user_id>/tts/jobs/<job_id>")
-@require_api_token
+@require_auth
 def tts_job(user_id: str, job_id: str) -> Any:
+    user_id = validate_user_id(user_id)
+    denied = _forbidden_if_mismatch(user_id)
+    if denied:
+        return denied
     job = store.get_tts_job(user_id, job_id)
     if job is None:
         return jsonify({"status": "error", "error": "未找到语音任务"}), 404

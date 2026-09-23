@@ -6,23 +6,23 @@ secrets (password hashes, real name, and emergency contacts) server-side.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import secrets
 from collections.abc import Mapping
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 import psycopg
-from dotenv import load_dotenv
+from dotenv import find_dotenv, load_dotenv
 from psycopg.errors import UniqueViolation
 from psycopg.rows import dict_row
 from werkzeug.security import check_password_hash, generate_password_hash
 
-load_dotenv(Path(__file__).with_name(".env"), override=False)
+load_dotenv(find_dotenv(usecwd=False), override=False)
 DEFAULT_DB_URL = "postgresql://xinqing:xinqing@localhost:5432/xinqing"
 
 
@@ -76,6 +76,7 @@ class DataStore:
                     user_id TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     expires_at TEXT NOT NULL,
+                    revoked INTEGER NOT NULL DEFAULT 0,
                     FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
                 );
                 CREATE TABLE IF NOT EXISTS conversations (
@@ -150,6 +151,9 @@ class DataStore:
                     conn.execute(f"ALTER TABLE users ADD COLUMN {name} {definition}")
             conn.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_nickname ON users(nickname) WHERE nickname <> ''"
+            )
+            conn.execute(
+                "ALTER TABLE auth_sessions ADD COLUMN IF NOT EXISTS revoked INTEGER NOT NULL DEFAULT 0"
             )
 
     @staticmethod
@@ -235,9 +239,9 @@ class DataStore:
         user.pop("emergency_contacts", None)
         return user
 
-    def create_session(self, user_id: str, days: int = 30) -> str:
+    def create_session(self, user_id: str, days: int = 7) -> str:
         token = secrets.token_urlsafe(32)
-        token_hash = generate_password_hash(token)
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
         now = utc_now()
         from datetime import timedelta
 
@@ -245,32 +249,29 @@ class DataStore:
         expires = expires_dt.isoformat()
         with self.connect() as conn:
             conn.execute(
-                "INSERT INTO auth_sessions(token_hash,user_id,created_at,expires_at) VALUES (%s,%s,%s,%s)",
+                "INSERT INTO auth_sessions(token_hash,user_id,created_at,expires_at,revoked) VALUES (%s,%s,%s,%s,0)",
                 (token_hash, user_id, now, expires),
             )
         return token
 
     def session_user(self, token: str) -> str | None:
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
         with self.connect() as conn:
-            rows = conn.execute(
-                "SELECT token_hash,user_id,expires_at FROM auth_sessions"
-            ).fetchall()
-        for row in rows:
-            if check_password_hash(row["token_hash"], token):
-                if row["expires_at"] < utc_now():
-                    return None
-                return row["user_id"]
-        return None
+            row = conn.execute(
+                "SELECT user_id,expires_at,revoked FROM auth_sessions WHERE token_hash=%s",
+                (token_hash,),
+            ).fetchone()
+        if not row or row["revoked"] or row["expires_at"] < utc_now():
+            return None
+        return row["user_id"]
 
     def revoke_session(self, token: str) -> None:
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
         with self.connect() as conn:
-            rows = conn.execute("SELECT token_hash FROM auth_sessions").fetchall()
-            for row in rows:
-                if check_password_hash(row["token_hash"], token):
-                    conn.execute(
-                        "DELETE FROM auth_sessions WHERE token_hash=%s", (row["token_hash"],)
-                    )
-                    break
+            conn.execute(
+                "UPDATE auth_sessions SET revoked=1 WHERE token_hash=%s",
+                (token_hash,),
+            )
 
     def ensure_user(self, user_id: Any) -> dict[str, Any]:
         user_id = validate_user_id(user_id)

@@ -2,6 +2,7 @@ import { Live2DAdapter } from "./live2d-adapter.js";
 
 const STORAGE_KEY = "xinqing-live2d-session";
 const state = { userId: "", displayName: "", conversationId: "", threadId: "", authToken: "", messages: [], busy: false, thinking: false };
+let refreshPromise = null;
 const $ = (id) => document.getElementById(id);
 const els = {
   loginView: $("login-view"), chatView: $("chat-view"), loginForm: $("login-form"),
@@ -64,15 +65,31 @@ function closeAssessment() { els.assessmentModal?.classList.add("is-hidden"); }
 
 function saveSession() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify({
-    user_id: state.userId, display_name: state.displayName, auth_token: state.authToken,
+    user_id: state.userId, display_name: state.displayName,
     conversation_id: state.conversationId, thread_id: state.threadId,
   }));
 }
 function loadSession() {
   try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "null") || {}; } catch { return {}; }
 }
+async function doRefresh() {
+  if (refreshPromise) return refreshPromise;
+  refreshPromise = (async () => {
+    const response = await fetch("/data-api/api/auth/refresh", { method: "POST", credentials: "include" });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.error || "refresh failed");
+    state.authToken = body.access_token;
+  })();
+  try { await refreshPromise; } finally { refreshPromise = null; }
+}
 async function request(path, options = {}) {
-  const response = await fetch(path, { headers: { "Content-Type": "application/json", ...(state.authToken ? { Authorization: `Bearer ${state.authToken}` } : {}), ...(options.headers || {}) }, ...options });
+  const headers = { "Content-Type": "application/json", ...(state.authToken ? { Authorization: `Bearer ${state.authToken}` } : {}), ...(options.headers || {}) };
+  let response = await fetch(path, { ...options, headers, credentials: "include" });
+  if (response.status === 401 && state.authToken && !path.includes("/api/auth/")) {
+    await doRefresh();
+    headers.Authorization = `Bearer ${state.authToken}`;
+    response = await fetch(path, { ...options, headers, credentials: "include" });
+  }
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(body.error || body.message || `请求失败（${response.status}）`);
   return body;
@@ -88,7 +105,7 @@ async function ensureConversation() {
   saveSession();
 }
 async function loadMessages() {
-  const result = await request(`/data-api/api/conversations/${encodeURIComponent(state.conversationId)}/messages?user_id=${encodeURIComponent(state.userId)}&limit=100`);
+  const result = await request(`/data-api/api/conversations/${encodeURIComponent(state.conversationId)}/messages?limit=100`);
   state.messages = result.messages || [];
   renderMessages();
 }
@@ -116,7 +133,7 @@ async function chatRequest(query) {
   const result = await request("/data-api/chat", {
     method: "POST",
     body: JSON.stringify({
-      user_id: state.userId,
+
       input_type: "text",
       content: query,
       conversation_id: state.conversationId,
@@ -164,8 +181,8 @@ async function sendMessage(event) {
 }
 let registerMode = false;
 function setAuthMode(register) {
-  registerMode = register; els.registerFields.classList.toggle("is-hidden", !register); els.loginTab.classList.toggle("active", !register); els.registerTab.classList.toggle("active", register); els.authSubmit.firstChild.textContent = register ? "创建账户并进入 " : "登录并进入 "; els.password.autocomplete = register ? "new-password" : "current-password";
-  els.authSwitch.textContent = register ? "已有账户？返回登录" : "还没有账户？点击“注册”";
+  registerMode = register; els.registerFields.classList.toggle("is-hidden", !register); els.registerFields.querySelectorAll("input").forEach((input) => { input.disabled = !register; }); els.loginTab.classList.toggle("active", !register); els.registerTab.classList.toggle("active", register); els.authSubmit.firstChild.textContent = register ? "创建账户并进入 " : "登录并进入 "; els.password.autocomplete = register ? "new-password" : "current-password";
+  els.authSwitch.textContent = register ? "已有账户？返回登录" : '还没有账户？点击"注册"';
 }
 async function enterApp(event) {
   event?.preventDefault(); els.loginError.textContent = "";
@@ -173,8 +190,8 @@ async function enterApp(event) {
     const nickname = els.nickname.value.trim(); const password = els.password.value;
     const endpoint = registerMode ? "/data-api/api/auth/register" : "/data-api/api/auth/login";
     const body = registerMode ? { nickname, password, real_name: els.realName.value.trim(), emergency_contacts: [{ name: els.contactName.value.trim(), phone: els.contactPhone.value.trim(), email: els.contactEmail.value.trim() }] } : { nickname, password };
-    const auth = await request(endpoint, { method: "POST", body: JSON.stringify(body) });
-    state.authToken = auth.token; state.userId = auth.user.user_id; state.displayName = auth.user.display_name || nickname;
+    const authResult = await request(endpoint, { method: "POST", body: JSON.stringify(body) });
+    state.authToken = authResult.access_token; state.userId = authResult.user.user_id; state.displayName = authResult.user.display_name || nickname;
     const previous = loadSession();
     if (previous.user_id === state.userId) { state.conversationId = previous.conversation_id || ""; state.threadId = ""; }
     await ensureUser(); await ensureConversation(); await loadMessages();
@@ -205,9 +222,23 @@ els.assessmentClose.addEventListener("click", closeAssessment);
 els.assessmentModal.addEventListener("click", (event) => { if (event.target === els.assessmentModal) closeAssessment(); });
 document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeAssessment(); });
 els.messageInput.addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); els.composer.requestSubmit(); } });
-const previous = loadSession();
-if (previous.auth_token) { state.authToken = previous.auth_token; }
+async function restoreSession() {
+  try {
+    await doRefresh();
+    const me = await request("/data-api/api/auth/me");
+    state.userId = me.user.user_id;
+    state.displayName = me.user.display_name || me.user.nickname || "";
+    const previous = loadSession();
+    if (previous.user_id === state.userId) { state.conversationId = previous.conversation_id || ""; state.threadId = previous.thread_id || ""; }
+    await ensureUser(); await ensureConversation(); await loadMessages();
+    els.userLabel.textContent = state.displayName; els.conversationTitle.textContent = state.conversationId;
+    els.loginView.classList.add("is-hidden"); els.chatView.classList.remove("is-hidden");
+    adapter = new Live2DAdapter(els.avatarCanvas, els.modelStatus);
+    await adapter.mount();
+  } catch { /* refresh failed, stay on login view */ }
+}
 setAuthMode(false);
+restoreSession();
 const savedPortrait = localStorage.getItem("xinqing-portrait-mode");
 setPortraitMode(savedPortrait === "1" || (savedPortrait === null && isMobilePlatform()), false);
 window.matchMedia("(max-width: 780px)").addEventListener?.("change", (event) => {
