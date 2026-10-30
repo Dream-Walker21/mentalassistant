@@ -335,11 +335,11 @@ L0 基础设施
 | TTS 语音合成（edge-tts + GPT-SoVITS 骨架） | ✅ 已完成 | 王力涵 |
 | JWT 鉴权（双 token + refresh + SHA-256 session） | ✅ 已完成（commit b1f2d69） | 王力涵 |
 | 知识库索引构建 | ✅ 已完成 | 蒋状钊 |
-| 正式 Web 前端 | ❌ 未开始 | 袁群 |
+| 正式 Web 前端 | 🚧 进行中（骨架完成：登录/聊天/风险弹窗，Live2D 待接，见 commit 5d8ec27） | 袁群 |
 | 测试代码（tests/） | ❌ 未开始 | 共同 |
 
 ### 下一步
-1. 袁群：实现正式前端骨架（参考 `web/live2d_demo/` 的 token 逻辑：access 存内存 + refresh cookie + 401 自动恢复）
+1. 袁群：接入 Live2D 立绘（`web/app/src/components/AvatarPanel.vue` 占位已留出），并与 data_service 真实后端联调
 2. 蒋状钊：langgraph 服务间鉴权（验 `SERVICE_API_KEY`，AUTH_DESIGN.md §8 第 4 项）
 3. 共同：危机路径联调（确认高危时工作流直调告警、data_service 容忍告警失败不阻断回复）
 4. 王力涵：GPT-SoVITS 联调（等服务起来再调）
