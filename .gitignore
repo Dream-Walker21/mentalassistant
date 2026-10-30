@@ -8,6 +8,7 @@ __pycache__/
 .langgraph_api/
 web/live2d_demo/node_modules/
 web/live2d_demo/vendor/live2dcubismcore.min.js
+web/app/node_modules/
 .vite/
 dist/
 start_xinqing_windows.bat
