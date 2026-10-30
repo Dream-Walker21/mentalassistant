@@ -1,0 +1,137 @@
+:root {
+  --ink: #1f2933;
+  --muted: #64748b;
+  --line: #e2e8f0;
+  --primary: #2f7d76;
+  --primary-strong: #25635e;
+  --accent: #7c8cf8;
+  --surface: #ffffff;
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  color: var(--ink);
+  font-family:
+    "PingFang SC", "Microsoft YaHei", "Noto Sans SC", system-ui, -apple-system, "Segoe UI", sans-serif;
+  background:
+    radial-gradient(circle at 12% 12%, #dcefe9 0, transparent 42%),
+    radial-gradient(circle at 88% 8%, #e6e4ff 0, transparent 40%),
+    #f3f6f8;
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* ---- 消息气泡（MessageBubble 与「正在思考」共用） ---- */
+.message {
+  display: flex;
+}
+
+.message.user {
+  justify-content: flex-end;
+}
+
+.bubble {
+  max-width: min(78%, 620px);
+  padding: 12px 16px;
+  border-radius: 18px 18px 18px 4px;
+  background: #f1f5f4;
+  color: var(--ink);
+  font-size: 15px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.message.user .bubble {
+  border-radius: 18px 18px 4px 18px;
+  background: linear-gradient(135deg, var(--primary), var(--primary-strong));
+  color: #fff;
+}
+
+.thinking {
+  color: var(--muted);
+}
+
+.thinking::after {
+  content: "…";
+  animation: blink 1.2s steps(4) infinite;
+}
+
+/* ---- 通用 ---- */
+.ghost {
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 13px;
+  transition:
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.ghost:hover {
+  border-color: var(--primary);
+  color: var(--primary-strong);
+}
+
+.empty-state {
+  margin: auto;
+  padding: 32px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+.empty-state strong {
+  color: var(--ink);
+  font-size: 17px;
+}
+
+.error-banner {
+  margin: 0 20px 8px;
+  padding: 10px 14px;
+  border: 1px solid #fecdca;
+  border-radius: 12px;
+  background: #fff1f0;
+  color: #b42318;
+  font-size: 13px;
+}
+
+@keyframes blink {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
